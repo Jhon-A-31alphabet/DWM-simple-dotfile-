@@ -1,0 +1,15 @@
+#!/bin/sh
+# Estado de WiFi para la barra de DWM.
+# Usa iwgetid si está disponible y, si no, nmcli (NetworkManager).
+export NO_COLOR=1
+
+ssid="$(iwgetid -r 2>/dev/null || /usr/sbin/iwgetid -r 2>/dev/null || true)"
+if [ -z "$ssid" ] && command -v nmcli >/dev/null 2>&1; then
+	ssid="$(nmcli -t -f active,ssid dev wifi 2>/dev/null | sed -n 's/^yes://p' | head -n 1)"
+fi
+
+if [ -n "$ssid" ]; then
+	printf '%s\n' "$ssid"
+else
+	echo off
+fi

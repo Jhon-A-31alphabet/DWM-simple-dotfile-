@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.o
+*.bak.*
+*.orig
+*.rej
+.DS_Store
+
+src/dwm-6.8/dwm
+src/dmenu-5.4/dmenu
+src/dmenu-5.4/stest
+src/slstatus-1.1/slstatus
+src/slock-1.7/slock

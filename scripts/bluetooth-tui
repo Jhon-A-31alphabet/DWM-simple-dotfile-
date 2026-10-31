@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Administrador Bluetooth TUI para DWM.
+
+Muestra los dispositivos conocidos, permite escanear, conectar/desconectar y
+encender/apagar el Bluetooth (radio/adaptador) mediante rfkill y bluetoothctl.
+"""
+
+from __future__ import annotations
+
+import curses
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+APP_NAME = "Administrador Bluetooth"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+BLUETOOTHCTL = "/usr/bin/bluetoothctl"
+RFKILL = shutil.which("rfkill") or "/usr/sbin/rfkill"
+SYSTEMCTL = "/usr/bin/systemctl"
+def clean(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def run_command(args: list[str], timeout: float = 6.0) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["NO_COLOR"] = "1"
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "Tiempo de espera agotado.")
+    except OSError as exc:
+        return subprocess.CompletedProcess(args, 127, "", str(exc))
+
+
+def service_active() -> bool:
+    result = run_command([SYSTEMCTL, "is-active", "bluetooth"], timeout=2)
+    return result.stdout.strip() == "active"
+
+
+def rfkill_blocked() -> bool | None:
+    result = run_command([RFKILL, "list", "bluetooth"], timeout=2)
+    if result.returncode != 0:
+        return None
+    for line in clean(result.stdout).splitlines():
+        if "Soft blocked:" in line:
+            return line.split(":", 1)[1].strip().lower() == "yes"
+    return None
+
+
+def parse_key_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in clean(text).splitlines():
+        line = line.strip()
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip().lower()] = value.strip()
+    return values
+
+
+def adapter_info() -> dict[str, str] | None:
+    result = run_command([BLUETOOTHCTL, "show"], timeout=4)
+    if result.returncode != 0:
+        return None
+    text = clean(result.stdout)
+    if "Controller " not in text:
+        return None
+    values = parse_key_values(text)
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("Controller "):
+            values["controller"] = line.split()[1]
+            break
+    return values
+
+
+def adapter_powered(adapter: dict[str, str] | None) -> bool:
+    return bool(adapter and adapter.get("powered", "").lower() == "yes")
+
+
+def device_list() -> list[dict[str, str]]:
+    result = run_command([BLUETOOTHCTL, "devices"], timeout=5)
+    if result.returncode != 0:
+        return []
+
+    devices: list[dict[str, str]] = []
+    for line in clean(result.stdout).splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3 or parts[0] != "Device":
+            continue
+        mac = parts[1]
+        name = parts[2].strip()
+        info_result = run_command([BLUETOOTHCTL, "info", mac], timeout=4)
+        info = parse_key_values(info_result.stdout) if info_result.returncode == 0 else {}
+        devices.append(
+            {
+                "mac": mac,
+                "name": info.get("name") or info.get("alias") or name,
+                "connected": info.get("connected", "no"),
+                "paired": info.get("paired", "no"),
+                "trusted": info.get("trusted", "no"),
+                "rssi": info.get("rssi", ""),
+            }
+        )
+    return sorted(devices, key=lambda device: device["name"].casefold())
+
+
+def toggle_power() -> tuple[bool, str]:
+    adapter = adapter_info()
+
+    if adapter_powered(adapter):
+        run_command([BLUETOOTHCTL, "power", "off"], timeout=5)
+        run_command([RFKILL, "block", "bluetooth"], timeout=3)
+        return True, "Bluetooth apagado."
+
+    run_command([RFKILL, "unblock", "bluetooth"], timeout=3)
+    time.sleep(2.5)
+    last_error = ""
+    for _ in range(3):
+        result = run_command([BLUETOOTHCTL, "power", "on"], timeout=5)
+        output = clean(result.stdout + result.stderr).strip()
+        if result.returncode == 0 and "succeeded" in output.lower():
+            return True, "Bluetooth encendido."
+        last_error = output
+        time.sleep(1.5)
+
+    return False, f"No se pudo encender Bluetooth: {last_error or 'sin controlador'}"
+
+
+def scan_devices(seconds: int = 8) -> tuple[bool, str]:
+    adapter = adapter_info()
+    if not adapter_powered(adapter):
+        return False, "Enciende Bluetooth primero con p."
+    result = run_command(
+        [BLUETOOTHCTL, "--timeout", str(seconds), "scan", "on"],
+        timeout=seconds + 8,
+    )
+    if result.returncode != 0:
+        error = clean(result.stderr + result.stdout).strip()
+        return False, f"Error al escanear: {error or result.returncode}"
+    return True, f"Escaneo terminado ({seconds}s)."
+
+
+def connect_toggle(device: dict[str, str]) -> tuple[bool, str]:
+    if device.get("connected") == "yes":
+        result = run_command([BLUETOOTHCTL, "disconnect", device["mac"]], timeout=10)
+        action = "desconectar"
+    else:
+        result = run_command([BLUETOOTHCTL, "connect", device["mac"]], timeout=15)
+        action = "conectar"
+
+    output = clean(result.stdout + result.stderr).strip()
+    if result.returncode == 0 and "failed" not in output.lower():
+        return True, f"Se pudo {action}: {device['name']}."
+    return False, f"No se pudo {action} {device['name']}: {output or 'error desconocido'}"
+
+
+class BluetoothTUI:
+    def __init__(self) -> None:
+        self.devices: list[dict[str, str]] = []
+        self.selected = 0
+        self.offset = 0
+        self.message = ""
+        self.error = ""
+        self.colors = False
+        self.refresh_devices()
+
+    def refresh_devices(self) -> None:
+        current_mac = self.devices[self.selected]["mac"] if self.devices else None
+        self.devices = device_list()
+        if not self.devices:
+            self.selected = 0
+            self.offset = 0
+            return
+        if current_mac:
+            for index, device in enumerate(self.devices):
+                if device["mac"] == current_mac:
+                    self.selected = index
+                    break
+            else:
+                self.selected = min(self.selected, len(self.devices) - 1)
+        else:
+            self.selected = min(self.selected, len(self.devices) - 1)
+
+    def initialize_colors(self) -> None:
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(3, curses.COLOR_RED, -1)
+            curses.init_pair(4, curses.COLOR_GREEN, -1)
+            self.colors = True
+        except curses.error:
+            self.colors = False
+
+    def title_attr(self) -> int:
+        return curses.color_pair(1) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def selected_attr(self) -> int:
+        return curses.color_pair(2) | curses.A_BOLD if self.colors else curses.A_REVERSE
+
+    def error_attr(self) -> int:
+        return curses.color_pair(3) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def ok_attr(self) -> int:
+        return curses.color_pair(4) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        if height < 10 or width < 50:
+            stdscr.addnstr(0, 0, "Ventana demasiado pequeña.", max(1, width - 1))
+            stdscr.refresh()
+            return
+
+        adapter = adapter_info()
+        powered = adapter_powered(adapter)
+        blocked = rfkill_blocked()
+        active = service_active()
+        adapter_name = (adapter or {}).get("alias") or (adapter or {}).get("name") or "sin adaptador"
+        if blocked:
+            state = "apagado (rfkill)"
+        elif powered:
+            state = "encendido"
+        else:
+            state = "apagado"
+
+        try:
+            stdscr.attron(self.title_attr())
+            stdscr.addnstr(0, 1, f" {APP_NAME} ", width - 2)
+            stdscr.attroff(self.title_attr())
+        except curses.error:
+            pass
+
+        header = f"Adaptador: {adapter_name}  ·  Bluetooth: {state}"
+        header += f"  ·  Servicio: {'activo' if active else 'inactivo'}"
+        stdscr.addnstr(1, 1, header, width - 2)
+        stdscr.hline(2, 0, curses.ACS_HLINE, width)
+
+        list_top = 3
+        list_height = max(1, height - 8)
+        if self.selected < self.offset:
+            self.offset = self.selected
+        elif self.selected >= self.offset + list_height:
+            self.offset = self.selected - list_height + 1
+        self.offset = min(self.offset, max(0, len(self.devices) - list_height))
+
+        if not self.devices:
+            stdscr.addnstr(list_top + 1, 2, "No hay dispositivos conocidos.", width - 3)
+            stdscr.addnstr(list_top + 2, 2, "Pulsa e para escanear.", width - 3)
+        else:
+            for row, device in enumerate(self.devices[self.offset : self.offset + list_height]):
+                index = self.offset + row
+                selected = index == self.selected
+                marker = ">" if selected else " "
+                connected = "C" if device["connected"] == "yes" else " "
+                paired = "P" if device["paired"] == "yes" else " "
+                text = f"{marker} [{connected}{paired}] {device['name']}  {device['mac']}"
+                try:
+                    if selected:
+                        stdscr.attron(self.selected_attr())
+                    stdscr.addnstr(list_top + row, 1, text.ljust(width - 2), width - 2)
+                    if selected:
+                        stdscr.attroff(self.selected_attr())
+                except curses.error:
+                    pass
+
+        stdscr.hline(height - 4, 0, curses.ACS_HLINE, width)
+
+        if self.devices:
+            device = self.devices[self.selected]
+            details = f"Seleccionado: {device['name']}  ·  Conectado: {device['connected']}"
+            details += f"  ·  Emparejado: {device['paired']}"
+            if device["rssi"]:
+                details += f"  ·  RSSI: {device['rssi']}"
+        else:
+            details = "Seleccionado: —"
+        stdscr.addnstr(height - 3, 1, details, width - 2)
+
+        if self.error:
+            stdscr.attron(self.error_attr())
+            stdscr.addnstr(height - 2, 1, f"Error: {self.error}", width - 2)
+            stdscr.attroff(self.error_attr())
+        elif self.message:
+            stdscr.attron(self.ok_attr())
+            stdscr.addnstr(height - 2, 1, self.message, width - 2)
+            stdscr.attroff(self.ok_attr())
+        else:
+            stdscr.addnstr(
+                height - 2,
+                1,
+                "p: encender/apagar  ·  e: escanear  ·  Enter: conectar/desconectar  ·  r: recargar  ·  q: salir",
+                width - 2,
+            )
+
+        stdscr.addnstr(height - 1, 1, "↑/↓ o j/k: mover   ·   C = conectado, P = emparejado", width - 2)
+        stdscr.refresh()
+
+    def run(self, stdscr: curses.window) -> None:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+        self.initialize_colors()
+
+        while True:
+            self.draw(stdscr)
+            key = stdscr.getch()
+
+            if key in (curses.KEY_UP, ord("k")):
+                if self.devices:
+                    self.selected = max(0, self.selected - 1)
+                self.message = ""
+                self.error = ""
+            elif key in (curses.KEY_DOWN, ord("j")):
+                if self.devices:
+                    self.selected = min(len(self.devices) - 1, self.selected + 1)
+                self.message = ""
+                self.error = ""
+            elif key in (curses.KEY_HOME, ord("g")):
+                self.selected = 0
+            elif key in (curses.KEY_END, ord("G")):
+                if self.devices:
+                    self.selected = len(self.devices) - 1
+            elif key == ord("p"):
+                self.message = "Cambiando estado de Bluetooth..."
+                self.error = ""
+                self.draw(stdscr)
+                stdscr.refresh()
+                ok, message = toggle_power()
+                self.message = message if ok else ""
+                self.error = "" if ok else message
+                self.refresh_devices()
+            elif key == ord("e"):
+                self.message = "Escaneando dispositivos..."
+                self.error = ""
+                self.draw(stdscr)
+                stdscr.refresh()
+                ok, message = scan_devices()
+                self.message = message if ok else ""
+                self.error = "" if ok else message
+                self.refresh_devices()
+            elif key in (10, 13, curses.KEY_ENTER):
+                if self.devices:
+                    device = self.devices[self.selected]
+                    self.message = f"Conectando/desconectando {device['name']}..."
+                    self.error = ""
+                    self.draw(stdscr)
+                    stdscr.refresh()
+                    ok, message = connect_toggle(device)
+                    self.message = message if ok else ""
+                    self.error = "" if ok else message
+                    self.refresh_devices()
+            elif key == ord("r"):
+                self.refresh_devices()
+                self.message = "Lista recargada."
+                self.error = ""
+            elif key in (ord("q"), 27):
+                break
+
+
+def main() -> int:
+    if not Path(BLUETOOTHCTL).is_file():
+        print("Error: bluetoothctl no está instalado.", file=sys.stderr)
+        return 1
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            "Error: este administrador necesita una terminal interactiva. "
+            "Ejecútalo dentro de kitty o desde la barra de DWM.",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = BluetoothTUI()
+    try:
+        curses.wrapper(app.run)
+    except curses.error as exc:
+        print(f"Error al iniciar la interfaz TUI: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

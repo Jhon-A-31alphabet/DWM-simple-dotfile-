@@ -1,0 +1,23 @@
+#!/bin/sh
+
+/usr/bin/setxkbmap -layout us
+
+# Fondo elegido con el selector TUI. Si no hay elección válida, usa el
+# fondo de siempre.
+WALLPAPER=""
+[ -f "$HOME/.config/wallpaper" ] && IFS= read -r WALLPAPER < "$HOME/.config/wallpaper"
+[ -n "$WALLPAPER" ] && [ -f "$WALLPAPER" ] || WALLPAPER="$HOME/Imágenes/fondos/ballena_minimalista.jpeg"
+[ -f "$WALLPAPER" ] || WALLPAPER="$HOME/Imágenes/fondos/ballena_minimalista.jpg"
+[ -f "$WALLPAPER" ] && /usr/bin/feh --bg-fill "$WALLPAPER"
+
+[ -f "$HOME/.config/picom/picom.conf" ] && /usr/bin/picom --config "$HOME/.config/picom/picom.conf" -b
+
+/usr/local/bin/redshift-auto &
+/usr/local/bin/slstatus &
+
+# La tecla Win abre dmenu: al pulsarla sola, xcape genera la combinación
+# Super+p, que dwm tiene asociada a dwm-dmenu. No depende de xmodmap ni de
+# que exista un keycode para F13, así que no le afectan las recargas de XKB.
+/usr/bin/xcape -e 'Super_L=Super_L|p' &
+
+exec /usr/local/bin/dwm

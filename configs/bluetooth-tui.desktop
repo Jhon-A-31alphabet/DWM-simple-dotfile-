@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Administrador Bluetooth
+Comment=Ver dispositivos y encender/apagar Bluetooth
+Exec=/usr/local/bin/bluetooth-tui
+Icon=bluetooth
+Terminal=true
+Categories=Settings;HardwareSettings;
+Keywords=bluetooth;dispositivos;adaptador;
+StartupNotify=true

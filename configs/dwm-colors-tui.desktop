@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Cambiar colores de DWM
+Comment=Editor TUI de colores para bordes y barra de DWM
+Exec=/usr/local/bin/dwm-colors-tui
+Icon=preferences-desktop-theme
+Terminal=true
+Categories=Settings;DesktopSettings;
+Keywords=color;colores;dwm;borde;barra;
+StartupNotify=true

@@ -1,0 +1,21 @@
+#!/bin/sh
+
+current=""
+
+while :; do
+	hour=$(/usr/bin/date +%-H)
+
+	if [ "$hour" -ge 8 ] && [ "$hour" -lt 17 ]; then
+		temp=5500
+	else
+		temp=3500
+	fi
+
+	if [ "$temp" != "$current" ]; then
+		/usr/bin/pkill -x redshift 2>/dev/null
+		/usr/bin/redshift -l 0:0 -t "$temp:$temp" -b 1:1 >/dev/null 2>&1 &
+		current="$temp"
+	fi
+
+	/bin/sleep 60
+done

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Toma una captura de pantalla completa con scrot y la guarda con fecha/hora.
+set -eu
+
+PICTURES=""
+if command -v xdg-user-dir >/dev/null 2>&1; then
+	PICTURES="$(xdg-user-dir PICTURES 2>/dev/null || true)"
+fi
+if [ -z "$PICTURES" ] || [ "$PICTURES" = "$HOME" ]; then
+	PICTURES="$HOME/Imágenes"
+fi
+
+DIR="$PICTURES/Capturas"
+mkdir -p "$DIR"
+
+SCROT="$(command -v scrot 2>/dev/null || true)"
+[ -n "$SCROT" ] && [ -x "$SCROT" ] || SCROT="$HOME/.local/opt/scrot/usr/bin/scrot"
+if [ ! -x "$SCROT" ]; then
+	echo "Error: no se encontró scrot. Instala el paquete scrot." >&2
+	exit 1
+fi
+
+FILE="$DIR/captura-$(date +%Y-%m-%d-%H-%M-%S-%N).png"
+exec "$SCROT" "$FILE"

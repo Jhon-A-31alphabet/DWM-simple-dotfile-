@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Cambiar fondo de pantalla
+Comment=Selector TUI de fondos para DWM
+Exec=/usr/local/bin/wallpaper-tui
+Icon=preferences-desktop-wallpaper
+Terminal=true
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;fondo;feh;dwm;
+StartupNotify=true

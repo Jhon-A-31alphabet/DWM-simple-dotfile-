@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""Selector TUI de colores para DWM.
+
+Permite cambiar el color de los bordes de las ventanas, el fondo de la barra
+de estado y el acento de la barra. Los cambios se aplican en caliente: el
+script escribe ~/.config/dwm/colors y avisa a DWM mediante la propiedad
+_DWM_RELOAD_COLORS.
+"""
+
+from __future__ import annotations
+
+import curses
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+APP_NAME = "Cambiar colores de DWM"
+COLORS_FILE = Path.home() / ".config" / "dwm" / "colors"
+DEFAULTS = {
+    "border": "#00FFFF",
+    "bar_bg": "#222222",
+    "accent": "#00FFFF",
+}
+FIELDS = [
+    ("Borde de ventanas", "border"),
+    ("Fondo de la barra", "bar_bg"),
+    ("Acento de la barra", "accent"),
+]
+PRESETS = [
+    ("Cyan", "#00FFFF"),
+    ("Azul", "#0000FF"),
+    ("Verde", "#00FF00"),
+    ("Rojo", "#FF0000"),
+    ("Amarillo", "#FFFF00"),
+]
+HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
+HEX3_RE = re.compile(r"^#?([0-9a-fA-F]{3})$")
+RGB_RE = re.compile(r"^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$", re.I)
+NUM_RE = re.compile(r"^(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})$")
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+
+
+def rgb_to_hex(red: int, green: int, blue: int) -> str:
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def parse_color(text: str) -> str | None:
+    """Acepta #RRGGBB, RRGGBB, #RGB, rgb(r,g,b), r,g,b o r g b."""
+    text = text.strip()
+    match = HEX_RE.fullmatch(text)
+    if match:
+        return f"#{match.group(1).upper()}"
+
+    match = HEX3_RE.fullmatch(text)
+    if match:
+        short = match.group(1).upper()
+        return f"#{short[0] * 2}{short[1] * 2}{short[2] * 2}"
+
+    match = RGB_RE.fullmatch(text)
+    if not match:
+        match = NUM_RE.fullmatch(text)
+    if match:
+        values = [int(part) for part in match.groups()]
+        if all(0 <= value <= 255 for value in values):
+            return rgb_to_hex(*values)
+    return None
+
+
+def relative_luminance(color: str) -> float:
+    def linear(channel: int) -> float:
+        value = channel / 255.0
+        return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = hex_to_rgb(color)
+    return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+
+
+def contrast_color(color: str) -> str:
+    return "#000000" if relative_luminance(color) > 0.5 else "#FFFFFF"
+
+
+def mix_color(color: str, target: str, amount: float) -> str:
+    red, green, blue = hex_to_rgb(color)
+    tred, tgreen, tblue = hex_to_rgb(target)
+    return rgb_to_hex(
+        round(red + (tred - red) * amount),
+        round(green + (tgreen - green) * amount),
+        round(blue + (tblue - blue) * amount),
+    )
+
+
+def accent_for(color: str) -> str:
+    """Genera un tono distinto pero de la misma familia para el acento."""
+    if relative_luminance(color) > 0.5:
+        return mix_color(color, "#000000", 0.25)
+    return mix_color(color, "#FFFFFF", 0.20)
+
+
+def rgb_to_xterm(color: str) -> int:
+    red, green, blue = hex_to_rgb(color)
+    return 16 + 36 * round(red / 255 * 5) + 6 * round(green / 255 * 5) + round(blue / 255 * 5)
+
+
+def read_colors() -> dict[str, str]:
+    values = dict(DEFAULTS)
+    try:
+        lines = COLORS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if key in values:
+            parsed = parse_color(raw_value.strip())
+            if parsed:
+                values[key] = parsed
+    return values
+
+
+def write_colors(values: dict[str, str]) -> None:
+    COLORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"border={values['border']}",
+        f"bar_bg={values['bar_bg']}",
+        f"bar_fg={contrast_color(values['bar_bg'])}",
+        f"accent={values['accent']}",
+        f"accent_fg={contrast_color(values['accent'])}",
+    ]
+    temporary = COLORS_FILE.with_suffix(".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temporary, COLORS_FILE)
+
+
+def notify_dwm() -> tuple[bool, str]:
+    xprop = shutil.which("xprop")
+    if not xprop:
+        return False, "No se encontró xprop."
+    try:
+        result = subprocess.run(
+            [
+                xprop,
+                "-root",
+                "-f",
+                "_DWM_RELOAD_COLORS",
+                "8s",
+                "-set",
+                "_DWM_RELOAD_COLORS",
+                str(time.time_ns()),
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return False, f"No se pudo ejecutar xprop: {exc}"
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        return False, message or f"xprop terminó con código {result.returncode}."
+    return True, ""
+
+
+def running_dwm_outdated() -> bool:
+    """Detecta si la sesión sigue usando un binario DWM anterior."""
+    try:
+        pids = subprocess.check_output(["pgrep", "-x", "dwm"], text=True).split()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    try:
+        installed = os.stat("/usr/local/bin/dwm")
+    except OSError:
+        return False
+
+    for pid in pids:
+        process_exe = f"/proc/{pid}/exe"
+        try:
+            target = os.readlink(process_exe)
+        except OSError:
+            continue
+        if target.endswith(" (deleted)"):
+            return True
+        try:
+            current = os.stat(process_exe)
+        except OSError:
+            continue
+        if (current.st_dev, current.st_ino) != (installed.st_dev, installed.st_ino):
+            return True
+    return False
+
+
+def apply_colors(values: dict[str, str]) -> tuple[bool, str]:
+    try:
+        write_colors(values)
+    except OSError as exc:
+        return False, f"No se pudo guardar el archivo de colores: {exc}"
+    ok, error = notify_dwm()
+    if not ok:
+        return False, f"Colores guardados, pero no se pudo avisar a DWM: {error}"
+    return True, ""
+
+
+class ColorsTUI:
+    def __init__(self) -> None:
+        self.values = read_colors()
+        self.selected = 0
+        self.editing = False
+        self.edit_buffer = ""
+        self.message = ""
+        self.error = ""
+        self.colors = False
+        self.swatches = False
+        self.outdated = running_dwm_outdated()
+        if self.outdated:
+            self.message = "La sesión usa un DWM anterior. Reinicia la sesión para ver los cambios en vivo."
+
+    def initialize_colors(self) -> None:
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(3, curses.COLOR_RED, -1)
+            self.colors = True
+            if curses.COLORS >= 256:
+                self.swatches = True
+                self.update_swatches()
+        except curses.error:
+            self.colors = False
+            self.swatches = False
+
+    def update_swatches(self) -> None:
+        if not self.swatches:
+            return
+        for index, (_, key) in enumerate(FIELDS):
+            try:
+                color = rgb_to_xterm(self.values[key])
+                curses.init_pair(10 + index, color, color)
+            except curses.error:
+                pass
+
+    def title_attr(self) -> int:
+        return curses.color_pair(1) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def selected_attr(self) -> int:
+        if self.colors:
+            return curses.color_pair(2) | curses.A_BOLD
+        return curses.A_REVERSE
+
+    def error_attr(self) -> int:
+        return curses.color_pair(3) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def start_edit(self) -> None:
+        key = FIELDS[self.selected][1]
+        self.editing = True
+        self.edit_buffer = self.values[key]
+        self.error = ""
+        self.message = ""
+
+    def cancel_edit(self) -> None:
+        self.editing = False
+        self.edit_buffer = ""
+        self.message = "Edición cancelada."
+
+    def commit_edit(self) -> None:
+        parsed = parse_color(self.edit_buffer)
+        if not parsed:
+            self.error = "Color inválido. Usa #RRGGBB, rgb(r,g,b) o r,g,b."
+            return
+        key = FIELDS[self.selected][1]
+        self.values[key] = parsed
+        self.editing = False
+        self.edit_buffer = ""
+        self.error = ""
+        self.apply_current(f"Color de {FIELDS[self.selected][0].lower()} aplicado.")
+
+    def apply_current(self, prefix: str = "") -> None:
+        ok, error = apply_colors(self.values)
+        self.update_swatches()
+        if ok:
+            self.message = prefix or "Colores aplicados."
+            if self.outdated:
+                self.message += "  Reinicia la sesión para verlos en vivo."
+            self.error = ""
+        else:
+            self.error = error
+            self.message = ""
+
+    def apply_preset(self, name: str, color: str) -> None:
+        self.values["border"] = color
+        self.values["bar_bg"] = color
+        self.values["accent"] = accent_for(color)
+        self.update_swatches()
+        self.apply_current(f"Preset {name} aplicado.")
+
+    def reload_from_file(self) -> None:
+        self.values = read_colors()
+        self.editing = False
+        self.edit_buffer = ""
+        self.update_swatches()
+        self.error = ""
+        self.message = "Colores recargados desde el archivo."
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+
+        if height < 14 or width < 54:
+            stdscr.addnstr(0, 0, "Ventana demasiado pequeña para el editor.", max(1, width - 1))
+            stdscr.refresh()
+            return
+
+        try:
+            stdscr.attron(self.title_attr())
+            stdscr.addnstr(0, 1, f" {APP_NAME} ", width - 2)
+            stdscr.attroff(self.title_attr())
+        except curses.error:
+            pass
+
+        stdscr.addnstr(1, 1, f"Archivo: {COLORS_FILE}", width - 2)
+        stdscr.hline(2, 0, curses.ACS_HLINE, width)
+
+        preset_text = "Presets:  1 Cyan   2 Azul   3 Verde   4 Rojo   5 Amarillo"
+        stdscr.addnstr(3, 1, preset_text, width - 2)
+        stdscr.hline(4, 0, curses.ACS_HLINE, width)
+
+        label_width = max(len(label) for label, _ in FIELDS) + 2
+        for index, (label, key) in enumerate(FIELDS):
+            row = 5 + index
+            selected = index == self.selected
+            marker = ">" if selected else " "
+            value = self.edit_buffer if self.editing and selected else self.values[key]
+            text = f"{marker} {label:<{label_width}} {value}"
+            try:
+                if selected:
+                    stdscr.attron(self.selected_attr())
+                stdscr.addnstr(row, 1, text.ljust(width - 2), width - 2)
+                if selected:
+                    stdscr.attroff(self.selected_attr())
+                if self.swatches:
+                    stdscr.addnstr(row, min(width - 3, 1 + len(text) + 1), "  ", 2, curses.color_pair(10 + index))
+            except curses.error:
+                pass
+
+        auto_text = (
+            f"Texto barra: {contrast_color(self.values['bar_bg'])} (automático)"
+            f"   ·   Texto acento: {contrast_color(self.values['accent'])} (automático)"
+        )
+        stdscr.addnstr(9, 1, auto_text, width - 2)
+
+        stdscr.hline(height - 4, 0, curses.ACS_HLINE, width)
+
+        if self.error:
+            stdscr.attron(self.error_attr())
+            stdscr.addnstr(height - 3, 1, f"Error: {self.error}", width - 2)
+            stdscr.attroff(self.error_attr())
+        elif self.message:
+            stdscr.addnstr(height - 3, 1, self.message, width - 2)
+        elif self.editing:
+            stdscr.addnstr(height - 3, 1, "Escribe el color y pulsa Enter. Esc cancela.", width - 2)
+        else:
+            stdscr.addnstr(
+                height - 3,
+                1,
+                "↑/↓: mover   Enter: editar   a: aplicar   1-5: preset   r: recargar   q: salir",
+                width - 2,
+            )
+
+        if self.editing:
+            help_text = "Enter: aceptar   Esc: cancelar   Backspace: borrar"
+        else:
+            help_text = "Acepta #RRGGBB, rgb(r,g,b) o r,g,b"
+        stdscr.addnstr(height - 2, 1, help_text, width - 2)
+
+        stdscr.refresh()
+
+    def run(self, stdscr: curses.window) -> None:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+        self.initialize_colors()
+
+        while True:
+            self.draw(stdscr)
+            key = stdscr.getch()
+
+            if self.editing:
+                if key in (10, 13, curses.KEY_ENTER):
+                    self.commit_edit()
+                elif key == 27:
+                    self.cancel_edit()
+                elif key in (curses.KEY_BACKSPACE, 8, 127):
+                    self.edit_buffer = self.edit_buffer[:-1]
+                elif 32 <= key <= 126 and len(self.edit_buffer) < 40:
+                    self.edit_buffer += chr(key)
+                continue
+
+            if key in (curses.KEY_UP, ord("k")):
+                self.selected = (self.selected - 1) % len(FIELDS)
+                self.message = ""
+                self.error = ""
+            elif key in (curses.KEY_DOWN, ord("j")):
+                self.selected = (self.selected + 1) % len(FIELDS)
+                self.message = ""
+                self.error = ""
+            elif key in (10, 13, curses.KEY_ENTER):
+                self.start_edit()
+            elif key == ord("a"):
+                self.apply_current()
+            elif ord("1") <= key <= ord("5"):
+                name, color = PRESETS[key - ord("1")]
+                self.apply_preset(name, color)
+            elif key == ord("r"):
+                self.reload_from_file()
+            elif key in (ord("q"), 27):
+                break
+
+
+def main() -> int:
+    if shutil.which("xprop") is None:
+        print("Error: xprop no está instalado o no está en el PATH.", file=sys.stderr)
+        return 1
+
+    # Si no existe el archivo, créalo con el tema actual para que DWM lo use.
+    if not COLORS_FILE.exists():
+        try:
+            write_colors(DEFAULTS)
+        except OSError as exc:
+            print(f"Error: no se pudo crear {COLORS_FILE}: {exc}", file=sys.stderr)
+            return 1
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            "Error: este editor necesita una terminal interactiva. "
+            "Ejecútalo dentro de kitty o desde dmenu.",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = ColorsTUI()
+    try:
+        curses.wrapper(app.run)
+    except curses.error as exc:
+        print(f"Error al iniciar la interfaz TUI: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

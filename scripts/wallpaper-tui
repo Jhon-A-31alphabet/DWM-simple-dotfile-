@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Selector TUI de fondos de pantalla para DWM.
+
+Los fondos se leen de ~/wallpapers. Al elegir uno con Enter se aplica
+inmediatamente con feh y se guarda la elección en ~/.config/wallpaper.
+"""
+
+from __future__ import annotations
+
+import curses
+import locale
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+APP_NAME = "Cambiar fondo de pantalla"
+WALLPAPER_DIR = Path.home() / "wallpapers"
+SOURCE_DIR = Path.home() / "Imágenes" / "fondos"
+STATE_FILE = Path.home() / ".config" / "wallpaper"
+IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".gif",
+    ".tif",
+    ".tiff",
+}
+
+
+def image_files() -> list[Path]:
+    """Devuelve las imágenes de ~/wallpapers ordenadas por nombre."""
+    try:
+        files = [
+            path
+            for path in WALLPAPER_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+    except FileNotFoundError:
+        return []
+    return sorted(files, key=lambda path: path.name.casefold())
+
+
+def ensure_wallpaper_dir() -> tuple[int, bool]:
+    """Crea ~/wallpapers y, si está vacía, copia los fondos ya existentes."""
+    created = not WALLPAPER_DIR.exists()
+    WALLPAPER_DIR.mkdir(parents=True, exist_ok=True)
+
+    seeded = 0
+    if not image_files() and SOURCE_DIR.is_dir():
+        seen: set[Path] = set()
+        for source in sorted(SOURCE_DIR.iterdir(), key=lambda path: path.name.casefold()):
+            if not source.is_file() or source.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            real_source = source.resolve()
+            if real_source in seen:
+                continue
+            seen.add(real_source)
+            destination = WALLPAPER_DIR / source.name
+            if destination.exists():
+                continue
+            try:
+                shutil.copy2(source, destination)
+                seeded += 1
+            except OSError:
+                pass
+    return seeded, created
+
+
+def read_state() -> Optional[Path]:
+    try:
+        text = STATE_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    return path if path.is_file() else None
+
+
+def read_fehbg() -> Optional[Path]:
+    """Obtiene el último fondo aplicado desde ~/.fehbg."""
+    fehbg = Path.home() / ".fehbg"
+    try:
+        lines = fehbg.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    import shlex
+
+    for line in reversed(lines):
+        if "feh" not in line:
+            continue
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            continue
+        for part in reversed(parts):
+            path = Path(part).expanduser()
+            if path.is_file():
+                return path
+    return None
+
+
+def current_wallpaper() -> Optional[Path]:
+    return read_state() or read_fehbg()
+
+
+def apply_wallpaper(path: Path) -> tuple[bool, str]:
+    """Aplica el fondo con feh y guarda la elección para el próximo inicio."""
+    feh = shutil.which("feh")
+    if not feh:
+        return False, "No se encontró feh en el PATH."
+
+    try:
+        result = subprocess.run(
+            [feh, "--bg-fill", str(path)],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return False, f"No se pudo ejecutar feh: {exc}"
+
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        return False, message or f"feh terminó con código {result.returncode}."
+
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(f"{path}\n", encoding="utf-8")
+    except OSError as exc:
+        return False, f"Fondo aplicado, pero no se guardó la selección: {exc}"
+
+    return True, ""
+
+
+def human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def image_dimensions(path: Path, cache: dict[Path, Optional[tuple[int, int]]]) -> Optional[tuple[int, int]]:
+    if path in cache:
+        return cache[path]
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            dimensions = image.size
+    except Exception:
+        dimensions = None
+    cache[path] = dimensions
+    return dimensions
+
+
+class WallpaperTUI:
+    def __init__(self, seeded: int, created: bool) -> None:
+        self.files = image_files()
+        self.selected = 0
+        self.offset = 0
+        self.current = current_wallpaper()
+        self.applied: Optional[Path] = None
+        self.dimensions_cache: dict[Path, Optional[tuple[int, int]]] = {}
+        self.colors = False
+
+        if seeded:
+            self.message = f"Se copiaron {seeded} fondos desde {SOURCE_DIR}."
+        elif created:
+            self.message = f"Carpeta creada: {WALLPAPER_DIR}"
+        else:
+            self.message = ""
+
+    def initialize_colors(self) -> None:
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(3, curses.COLOR_RED, -1)
+            self.colors = True
+        except curses.error:
+            self.colors = False
+
+    def title_attr(self) -> int:
+        return curses.color_pair(1) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def selected_attr(self) -> int:
+        if self.colors:
+            return curses.color_pair(2) | curses.A_BOLD
+        return curses.A_REVERSE
+
+    def error_attr(self) -> int:
+        return curses.color_pair(3) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def page_size(self, stdscr: curses.window) -> int:
+        height, _ = stdscr.getmaxyx()
+        return max(1, height - 8)
+
+    def move(self, delta: int) -> None:
+        if not self.files:
+            return
+        self.selected = max(0, min(len(self.files) - 1, self.selected + delta))
+        self.message = ""
+        self.error = ""
+
+    def reload(self) -> None:
+        current_name = self.files[self.selected].name if self.files else None
+        self.files = image_files()
+        self.dimensions_cache.clear()
+        if not self.files:
+            self.selected = 0
+            self.offset = 0
+            self.message = "La carpeta está vacía. Copia fondos y pulsa r."
+            return
+        if current_name:
+            for index, path in enumerate(self.files):
+                if path.name == current_name:
+                    self.selected = index
+                    break
+            else:
+                self.selected = min(self.selected, len(self.files) - 1)
+        else:
+            self.selected = min(self.selected, len(self.files) - 1)
+        self.message = "Lista recargada."
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+
+        if height < 8 or width < 34:
+            stdscr.addnstr(0, 0, "Ventana demasiado pequeña.", max(1, width - 1))
+            stdscr.refresh()
+            return
+
+        try:
+            stdscr.attron(self.title_attr())
+            stdscr.addnstr(0, 1, f" {APP_NAME} ", width - 2)
+            stdscr.attroff(self.title_attr())
+        except curses.error:
+            pass
+
+        stdscr.addnstr(1, 1, f"Carpeta: {WALLPAPER_DIR}", width - 2)
+        stdscr.hline(2, 0, curses.ACS_HLINE, width)
+
+        list_top = 3
+        list_height = max(1, height - 8)
+        if self.selected < self.offset:
+            self.offset = self.selected
+        elif self.selected >= self.offset + list_height:
+            self.offset = self.selected - list_height + 1
+        self.offset = min(self.offset, max(0, len(self.files) - list_height))
+
+        if not self.files:
+            stdscr.addnstr(list_top + 1, 2, "No hay imágenes en esta carpeta.", width - 3)
+            stdscr.addnstr(
+                list_top + 2,
+                2,
+                "Copia tus fondos (jpg, png, webp...) y pulsa r para recargar.",
+                width - 3,
+            )
+        else:
+            visible = self.files[self.offset : self.offset + list_height]
+            for row, path in enumerate(visible):
+                index = self.offset + row
+                selected = index == self.selected
+                marker = ">" if selected else " "
+                text = f"{marker} {path.name}"
+                try:
+                    if selected:
+                        stdscr.attron(self.selected_attr())
+                    stdscr.addnstr(list_top + row, 1, text.ljust(width - 2), width - 2)
+                    if selected:
+                        stdscr.attroff(self.selected_attr())
+                except curses.error:
+                    pass
+
+        stdscr.hline(height - 4, 0, curses.ACS_HLINE, width)
+
+        if self.files:
+            selected_path = self.files[self.selected]
+            details = f"Seleccionado: {selected_path.name}"
+            size = selected_path.stat().st_size
+            details += f"  ·  {human_size(size)}"
+            dimensions = image_dimensions(selected_path, self.dimensions_cache)
+            if dimensions:
+                details += f"  ·  {dimensions[0]}x{dimensions[1]}"
+        else:
+            details = "Seleccionado: —"
+        stdscr.addnstr(height - 3, 1, details, width - 2)
+
+        current = self.current or current_wallpaper()
+        current_text = f"Fondo actual: {current if current else 'desconocido'}"
+        stdscr.addnstr(height - 2, 1, current_text, width - 2)
+
+        if self.error:
+            stdscr.attron(self.error_attr())
+            stdscr.addnstr(height - 1, 1, f"Error: {self.error}", width - 2)
+            stdscr.attroff(self.error_attr())
+        elif self.message:
+            stdscr.addnstr(height - 1, 1, self.message, width - 2)
+        else:
+            stdscr.addnstr(
+                height - 1,
+                1,
+                "Enter: aplicar  ·  ↑/↓ o j/k: mover  ·  r: recargar  ·  q: salir",
+                width - 2,
+            )
+
+        stdscr.refresh()
+
+    def run(self, stdscr: curses.window) -> None:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+        self.initialize_colors()
+        self.error = ""
+
+        while True:
+            self.draw(stdscr)
+            key = stdscr.getch()
+
+            if key in (curses.KEY_UP, ord("k")):
+                self.move(-1)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                self.move(1)
+            elif key == curses.KEY_PPAGE:
+                self.move(-self.page_size(stdscr))
+            elif key == curses.KEY_NPAGE:
+                self.move(self.page_size(stdscr))
+            elif key in (curses.KEY_HOME, ord("g")):
+                if self.files:
+                    self.selected = 0
+                    self.message = ""
+                    self.error = ""
+            elif key in (curses.KEY_END, ord("G")):
+                if self.files:
+                    self.selected = len(self.files) - 1
+                    self.message = ""
+                    self.error = ""
+            elif key == ord("r"):
+                self.reload()
+            elif key in (10, 13, curses.KEY_ENTER):
+                if self.files:
+                    ok, error = apply_wallpaper(self.files[self.selected])
+                    if ok:
+                        self.current = self.files[self.selected]
+                        self.applied = self.current
+                        self.message = f"Aplicado: {self.current.name}"
+                        self.error = ""
+                    else:
+                        self.error = error
+                        self.message = ""
+            elif key in (ord("q"), 27):
+                break
+
+
+def main() -> int:
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+
+    if shutil.which("feh") is None:
+        print("Error: feh no está instalado o no está en el PATH.", file=sys.stderr)
+        return 1
+
+    seeded, created = ensure_wallpaper_dir()
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            "Error: este selector necesita una terminal interactiva. "
+            "Ejecútalo dentro de kitty o desde dmenu.",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = WallpaperTUI(seeded, created)
+    try:
+        curses.wrapper(app.run)
+    except curses.error as exc:
+        print(f"Error al iniciar la interfaz TUI: {exc}", file=sys.stderr)
+        return 1
+
+    if app.applied:
+        print(f"Fondo aplicado: {app.applied}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
