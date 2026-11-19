@@ -61,19 +61,21 @@ También se puede usar el instalador de compatibilidad:
   - Separación de 30 px entre ventanas.
   - Separación de 20 px entre la barra y las ventanas.
   - Colores recargables en caliente desde `~/.config/dwm/colors`.
-  - Bloques WiFi y Bluetooth clicables en la barra.
+  - Bloques `Bateria`, `luz nocturna`, `WiFi` y `BT` clicables en la barra.
   - Atajos y reglas personalizadas.
 - `picom` y `~/.config/picom/picom.conf`:
   - Ventanas y barra cuadradas.
   - Transparencia únicamente para kitty al 85 %.
   - Sin sombras.
 - `scrot` y `/usr/local/bin/scrot-shot` para capturas de pantalla.
-- `kitty` y `redshift`, usados por los atajos y por `redshift-auto`.
+- `kitty` y `redshift`, usados por los atajos y por
+  `redshift-night-scheduler`.
 - Atajo `Ctrl+S` y bloque `scrht` en la barra para capturar la pantalla.
 
 ### `make bar`
 
 - `slstatus` con:
+  - Bloques `Bateria` y `luz nocturna`, que abren sus TUIs al hacer clic.
   - WiFi actual mediante `wifi-status` (`iwgetid` o `nmcli`).
   - Estado de Bluetooth.
   - Bloque `scrht` para capturas.
@@ -92,22 +94,26 @@ También se puede usar el instalador de compatibilidad:
 - `wallpaper-tui`: selector de fondos con `feh`.
 - `dwm-colors-tui`: editor de colores de bordes y barra.
 - `bluetooth-tui`: dispositivos, escaneo, conexión y encendido/apagado.
+- `battery-tui`: perfiles de energía con power-profiles-daemon o TLP 1.9+.
+- `redshift-tui`: nivel manual de luz nocturna y horario automático.
 - Accesos en dmenu:
   - Cambiar fondo de pantalla.
   - Cambiar colores de DWM.
   - Administrador Bluetooth.
+  - Bateria.
+  - luz nocturna.
 - Carpeta `~/wallpapers` y fondo por defecto.
 - Tema de colores por defecto, solo si no existe uno.
 
 ### `make xinit`
 
-- `dwm-session`, `dwm-dmenu` y `redshift-auto`.
+- `dwm-session`, `dwm-dmenu` y `redshift-night-scheduler`.
 - `~/.xinitrc`.
 - Entrada de sesión `/usr/share/xsessions/dwm.desktop`.
 - La sesión inicia:
   - Fondo de pantalla persistente.
   - picom.
-  - redshift-auto.
+  - `redshift-night-scheduler` (respeta el modo manual o Auto).
   - slstatus.
   - xcape.
   - DWM.
@@ -124,6 +130,7 @@ MYDWM/
 ├── ATAJOS.md
 ├── BLUETOOTH.md
 ├── DWM-COLORS.md
+├── LUZ-NOCTURNA-Y-BATERIA.md
 ├── WALLPAPERS.md
 ├── SCREENSHOTS.md
 ├── GAMING.md
@@ -137,12 +144,14 @@ MYDWM/
 │   ├── 02-install-bar.sh
 │   ├── 03-install-tuis.sh
 │   ├── 04-configure-xinit.sh
+│   ├── battery-tui
 │   ├── bluetooth-tui
 │   ├── bt-status
 │   ├── dwm-colors-tui
 │   ├── dwm-dmenu
 │   ├── dwm-session
-│   ├── redshift-auto
+│   ├── redshift-night-scheduler
+│   ├── redshift-tui
 │   ├── scrot-shot
 │   ├── wifi-status
 │   └── wallpaper-tui
@@ -154,14 +163,43 @@ MYDWM/
 
 - **Super** o **Super + P**: abrir dmenu.
 - **Super + Shift + Enter** o **Ctrl + Alt + Z**: abrir kitty.
+- **Clic izquierdo en `Bateria`** de la barra: abrir el selector de perfil de energía.
+- **Clic izquierdo en `luz nocturna`** de la barra: abrir el selector de Redshift.
 - **Clic izquierdo en `WiFi:`** de la barra: abrir `nmtui`.
 - **Clic izquierdo en `BT:`** de la barra: abrir el administrador Bluetooth.
 - **Ctrl + S** o **clic izquierdo en `scrht`**: captura de pantalla con `scrot`.
 - **Cambiar fondo**: dmenu → *Cambiar fondo de pantalla*.
 - **Cambiar colores**: dmenu → *Cambiar colores de DWM*.
 - **Bluetooth**: dmenu → *Administrador Bluetooth*.
+- **Perfil de energía**: dmenu → *Bateria*.
+- **Luz nocturna**: dmenu → *luz nocturna*.
 
 Los atajos completos están en [ATAJOS.md](ATAJOS.md).
+
+## Luz nocturna y batería
+
+`luz nocturna` guarda su estado en `~/.config/redshift-night`:
+
+```text
+mode=manual
+percent=40
+auto_percent=60
+begin=20:00
+end=07:00
+kelvin=4500
+```
+
+- Con `mode=manual` se aplica `percent` hasta que se elija otra cosa.
+- Con `mode=auto` se aplica `auto_percent` dentro de `begin`-`end` y 6500 K
+  fuera de ese horario. El horario puede cruzar medianoche.
+- Elegir un porcentaje manual cancela el modo Auto.
+- `redshift-night-scheduler` relee el archivo cada 10 segundos, así que el
+  cambio sobrevive al cierre de la TUI.
+
+`Bateria` detecta automáticamente `power-profiles-daemon` o TLP 1.9+. Con TLP
+usa `tlpctl` si está disponible; si solo existe el comando `tlp`, el cambio de
+perfil pide autorización con `pkexec` o `sudo`. TLP 1.8 no admite los tres
+perfiles y se muestra un aviso en la TUI.
 
 ## Verificación
 
@@ -179,9 +217,12 @@ y que DWM incluya la recarga de colores en caliente.
 - `make setup` ejecutado de principio a fin en Ubuntu 26.04.
 - `make clean` y compilación posterior desde fuentes limpias.
 - `make verify` correcto.
-- Las tres TUIs arrancan desde `/usr/local/bin`.
-- Los clics de `WiFi:` y `BT:` abren sus administradores en una sesión DWM de
-  prueba.
+- Las cinco TUIs arrancan desde `/usr/local/bin`.
+- Los clics de `Bateria`, `luz nocturna`, `WiFi:` y `BT:` abren sus TUIs en una
+  sesión DWM de prueba.
+- `battery-tui` detecta power-profiles-daemon y aplica el perfil activo sin
+  `sudo`. La ruta TLP 1.9+ está implementada, pero no se pudo probar en esta
+  máquina porque TLP no está instalado (es incompatible con PPD).
 - `Ctrl+S` y el clic en `scrht` generan capturas con `scrot` en una sesión DWM
   de prueba.
 - El instalador probado con un `$HOME` vacío crea el tema, el fondo y los
@@ -198,6 +239,7 @@ El instalador no sobrescribe estas preferencias si ya existen:
 ```text
 ~/.config/dwm/colors
 ~/.config/wallpaper
+~/.config/redshift-night
 ~/wallpapers/
 ```
 
@@ -215,6 +257,8 @@ con el sufijo:
 - [WALLPAPERS.md](WALLPAPERS.md): selector de fondos.
 - [DWM-COLORS.md](DWM-COLORS.md): editor de colores.
 - [BLUETOOTH.md](BLUETOOTH.md): administrador Bluetooth.
+- [LUZ-NOCTURNA-Y-BATERIA.md](LUZ-NOCTURNA-Y-BATERIA.md): luz nocturna,
+  perfiles de energía y scheduler de Redshift.
 - [SCREENSHOTS.md](SCREENSHOTS.md): capturas con `scrot`.
 - [GAMING.md](GAMING.md): notas opcionales de Steam/Heroic (no forman parte de
   `make setup`).

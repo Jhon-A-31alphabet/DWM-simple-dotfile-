@@ -74,6 +74,12 @@ static const char *wificmd[]  = { "kitty", "--class", "wifi-manager",
 static const char *btcmd[]    = { "kitty", "--class", "bluetooth-manager",
                                   "--title", "Administrador Bluetooth",
                                   "-e", "/usr/local/bin/bluetooth-tui", NULL };
+static const char *batterycmd[] = { "kitty", "--class", "battery-tui",
+                                    "--title", "Bateria",
+                                    "-e", "/usr/local/bin/battery-tui", NULL };
+static const char *nightcmd[] = { "kitty", "--class", "redshift-tui",
+                                  "--title", "luz nocturna",
+                                  "-e", "/usr/local/bin/redshift-tui", NULL };
 static const char *scrotcmd[] = { "/usr/local/bin/scrot-shot", NULL };
 
 static const Key keys[] = {
@@ -129,12 +135,14 @@ static const Key keys[] = {
 };
 
 /* button definitions */
-/* click can be ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle, ClkClientWin, or ClkRootWin */
+/* click can be ClkTagBar, ClkLtSymbol, ClkStatusText, ClkBattery, ClkNight, ClkWifi, ClkBluetooth, ClkScrot, ClkWinTitle, ClkClientWin, or ClkRootWin */
 static const Button buttons[] = {
 	/* click                event mask      button          function        argument */
 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
 	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
+	{ ClkBattery,           0,              Button1,        spawn,          {.v = batterycmd } },
+	{ ClkNight,             0,              Button1,        spawn,          {.v = nightcmd } },
 	{ ClkWifi,              0,              Button1,        spawn,          {.v = wificmd } },
 	{ ClkBluetooth,         0,              Button1,        spawn,          {.v = btcmd } },
 	{ ClkScrot,             0,              Button1,        spawn,          {.v = scrotcmd } },

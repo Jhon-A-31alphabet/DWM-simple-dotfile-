@@ -121,6 +121,8 @@ Las capturas se guardan en `~/Imágenes/Capturas/` con fecha y hora.
 | `Clic izquierdo` en el símbolo del diseño | Rotar al siguiente diseño |
 | `Clic derecho` en el símbolo del diseño | Cambiar al diseño monocle |
 | `Clic central` en el título de la ventana | Intercambiar la ventana con la maestra (`zoom`) |
+| `Clic izquierdo` en el bloque `Bateria` de la barra | Abrir `battery-tui` |
+| `Clic izquierdo` en el bloque `luz nocturna` de la barra | Abrir `redshift-tui` |
 | `Clic izquierdo` en el bloque `WiFi:` de la barra | Abrir `nmtui` |
 | `Clic izquierdo` en el bloque `BT:` de la barra | Abrir el administrador Bluetooth |
 | `Clic izquierdo` en el bloque `scrht` de la barra | Tomar una captura con `scrot` |
@@ -135,6 +137,34 @@ Se pueden abrir desde dmenu:
 | Cambiar fondo de pantalla | `wallpaper-tui` | Elegir un fondo de `~/wallpapers` y aplicarlo con `feh` |
 | Cambiar colores de DWM | `dwm-colors-tui` | Cambiar bordes, barra y acento en caliente |
 | Administrador Bluetooth | `bluetooth-tui` | Ver, escanear, conectar y encender/apagar Bluetooth |
+| Bateria | `battery-tui` | Elegir Rendimiento, Equilibrado o Ahorro de bateria |
+| luz nocturna | `redshift-tui` | Elegir porcentaje manual o configurar Auto |
+
+### Controles de `Bateria`
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` / `k` | Perfil anterior |
+| `↓` / `j` | Perfil siguiente |
+| `Enter` | Aplicar el perfil seleccionado |
+| `q` / `Esc` | Salir |
+
+Detecta power-profiles-daemon o TLP 1.9+. Con TLP puede pedir autorización con
+`pkexec` o `sudo` al aplicar el perfil.
+
+### Controles de `luz nocturna`
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` / `k`, `↓` / `j`, `Tab` | Moverse entre porcentajes y campos de Auto |
+| `0`-`9` | Escribir en el campo de Auto enfocado |
+| `Backspace` | Borrar el último dígito |
+| `Enter` | Aplicar el porcentaje o validar y aplicar Auto |
+| `q` / `Esc` | Salir |
+
+Elegir un porcentaje manual cancela el horario Auto. Auto usa `begin` y `end`
+en formato de 24 h, admite horarios que cruzan medianoche y rechaza
+`begin == end` o una temperatura fuera de 0-100 %.
 
 ## Apariencia configurada
 
@@ -147,7 +177,7 @@ Se pueden abrir desde dmenu:
 - Esquinas redondeadas de Picom: **desactivadas** (`corner-radius = 0`).
 - Transparencia: **solo kitty**, al **85 %** de opacidad.
 - Acento de la barra: etiqueta seleccionada, título enfocado y bloques
-  WiFi/BT/scrht.
+  Bateria/luz nocturna/WiFi/BT/scrht.
 - Los colores de bordes y barra se guardan en `~/.config/dwm/colors`.
 
 ## Archivos relacionados
@@ -156,9 +186,10 @@ Se pueden abrir desde dmenu:
 - Configuración de DWM: `src/dwm-6.8/config.h` y `src/dwm-6.8/config.def.h`
 - Configuración de Picom: `configs/picom.conf`
 - Scripts de sesión: `scripts/dwm-session`, `scripts/dwm-dmenu`,
-  `scripts/redshift-auto`
+  `scripts/redshift-night-scheduler`
 - TUIs: `scripts/wallpaper-tui`, `scripts/dwm-colors-tui`,
-  `scripts/bluetooth-tui`
+  `scripts/bluetooth-tui`, `scripts/battery-tui`, `scripts/redshift-tui`
 - Capturas: `scripts/scrot-shot`
 - Instalador: `make setup` o `./install.sh`
-- Documentación: `README.md`, `INSTALL.md` y `SCREENSHOTS.md`
+- Documentación: `README.md`, `INSTALL.md`, `ATAJOS.md`,
+  `LUZ-NOCTURNA-Y-BATERIA.md` y `SCREENSHOTS.md`

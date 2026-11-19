@@ -83,4 +83,4 @@ done
 
 echo
 echo "Barra de estado, dmenu, nmtui y administrador Bluetooth instalados."
-echo "Los bloques WiFi y BT de la barra se activarán al reiniciar la sesión de DWM."
+echo "Los bloques Bateria, luz nocturna, WiFi, BT y scrht se activarán al reiniciar la sesión de DWM."

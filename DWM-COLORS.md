@@ -5,7 +5,7 @@ Script TUI en Python para cambiar en caliente:
 - Color de los bordes de las ventanas.
 - Color de fondo de la barra de estado.
 - Color de acento de la barra (etiqueta seleccionada, título y bloques
-  WiFi/BT/scrht).
+  Bateria/luz nocturna/WiFi/BT/scrht).
 
 ## Instalación
 

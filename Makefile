@@ -41,7 +41,7 @@ xinit:
 verify:
 	@echo "==> Verificando instalación de MYDWM"
 	@set -euo pipefail; \
-	for command in dwm dmenu slstatus slock picom feh scrot kitty nmtui bluetoothctl rfkill xprop python3; do \
+	for command in dwm dmenu slstatus slock picom feh scrot kitty nmtui bluetoothctl rfkill xprop python3 redshift; do \
 		command -v "$$command" >/dev/null 2>&1 || { echo "Falta el comando: $$command"; exit 1; }; \
 	done; \
 	for file in \
@@ -52,20 +52,24 @@ verify:
 		/usr/local/bin/wifi-status \
 		/usr/local/bin/dwm-session \
 		/usr/local/bin/dwm-dmenu \
-		/usr/local/bin/redshift-auto \
+		/usr/local/bin/redshift-night-scheduler \
+		/usr/local/bin/battery-tui \
+		/usr/local/bin/redshift-tui \
 		/usr/local/bin/scrot-shot \
 		"$$HOME/.xinitrc" \
 		"$$HOME/.config/picom/picom.conf" \
 		"$$HOME/.local/share/applications/wallpaper-tui.desktop" \
 		"$$HOME/.local/share/applications/dwm-colors-tui.desktop" \
 		"$$HOME/.local/share/applications/bluetooth-tui.desktop" \
+		"$$HOME/.local/share/applications/battery-tui.desktop" \
+		"$$HOME/.local/share/applications/redshift-tui.desktop" \
 		/usr/share/xsessions/dwm.desktop; do \
 		[[ -e "$$file" ]] || { echo "Falta el archivo: $$file"; exit 1; }; \
 	done; \
-	for file in /usr/local/bin/wallpaper-tui /usr/local/bin/dwm-colors-tui /usr/local/bin/bluetooth-tui /usr/local/bin/bt-status /usr/local/bin/wifi-status /usr/local/bin/scrot-shot; do \
+	for file in /usr/local/bin/wallpaper-tui /usr/local/bin/dwm-colors-tui /usr/local/bin/bluetooth-tui /usr/local/bin/battery-tui /usr/local/bin/redshift-tui /usr/local/bin/redshift-night-scheduler /usr/local/bin/bt-status /usr/local/bin/wifi-status /usr/local/bin/scrot-shot; do \
 		[[ -x "$$file" ]] || { echo "No es ejecutable: $$file"; exit 1; }; \
 	done; \
-	for desktop in wallpaper-tui dwm-colors-tui bluetooth-tui; do \
+	for desktop in wallpaper-tui dwm-colors-tui bluetooth-tui battery-tui redshift-tui; do \
 		desktop_file="$$HOME/.local/share/applications/$$desktop.desktop"; \
 		grep -q '^Exec=/usr/local/bin/' "$$desktop_file" \
 			|| { echo "El acceso $$desktop no apunta a /usr/local/bin."; exit 1; }; \
@@ -78,6 +82,32 @@ verify:
 		|| { echo "slstatus no apunta a /usr/local/bin/wifi-status."; exit 1; }; \
 	grep -q '/usr/local/bin/bluetooth-tui' "$(SRC)/dwm-6.8/config.def.h" \
 		|| { echo "DWM no apunta a /usr/local/bin/bluetooth-tui."; exit 1; }; \
+	grep -q '/usr/local/bin/battery-tui' "$(SRC)/dwm-6.8/config.def.h" \
+		|| { echo "DWM no apunta a /usr/local/bin/battery-tui."; exit 1; }; \
+	grep -q '/usr/local/bin/redshift-tui' "$(SRC)/dwm-6.8/config.def.h" \
+		|| { echo "DWM no apunta a /usr/local/bin/redshift-tui."; exit 1; }; \
+	grep -q 'ClkBattery' "$(SRC)/dwm-6.8/config.def.h" \
+		|| { echo "DWM no incluye el clic del bloque Bateria."; exit 1; }; \
+	grep -q 'ClkNight' "$(SRC)/dwm-6.8/config.def.h" \
+		|| { echo "DWM no incluye el clic del bloque luz nocturna."; exit 1; }; \
+	grep -q 'statusblock' "$(SRC)/dwm-6.8/dwm.c" \
+		|| { echo "DWM no incluye el parser de los bloques nuevos."; exit 1; }; \
+	grep -q 'Bateria' "$(SRC)/slstatus-1.1/config.def.h" \
+		|| { echo "slstatus no incluye el bloque Bateria."; exit 1; }; \
+	grep -q 'luz nocturna' "$(SRC)/slstatus-1.1/config.def.h" \
+		|| { echo "slstatus no incluye el bloque luz nocturna."; exit 1; }; \
+	grep -q '^Name=Bateria$$' "$$HOME/.local/share/applications/battery-tui.desktop" \
+		|| { echo "El acceso battery-tui no se llama Bateria."; exit 1; }; \
+	grep -q '^Name=luz nocturna$$' "$$HOME/.local/share/applications/redshift-tui.desktop" \
+		|| { echo "El acceso redshift-tui no se llama luz nocturna."; exit 1; }; \
+	grep -q '/usr/local/bin/redshift-night-scheduler' /usr/local/bin/dwm-session \
+		|| { echo "dwm-session no inicia redshift-night-scheduler."; exit 1; }; \
+	! grep -q 'redshift-auto' /usr/local/bin/dwm-session \
+		|| { echo "dwm-session todavía inicia el antiguo redshift-auto."; exit 1; }; \
+	[[ ! -e /usr/local/bin/redshift-auto ]] \
+		|| { echo "Todavía existe el antiguo /usr/local/bin/redshift-auto."; exit 1; }; \
+	[[ -f "$$HOME/.config/redshift-night" ]] \
+		|| { echo "Falta ~/.config/redshift-night."; exit 1; }; \
 	grep -q 'scrht' "$(SRC)/slstatus-1.1/config.def.h" \
 		|| { echo "slstatus no incluye el bloque scrht."; exit 1; }; \
 	grep -q 'ControlMask,.*XK_s' "$(SRC)/dwm-6.8/config.def.h" \
@@ -91,7 +121,7 @@ verify:
 	[[ -d "$$HOME/wallpapers" ]] || { echo "Falta ~/wallpapers."; exit 1; }; \
 	[[ -f "$$HOME/.config/wallpaper" ]] || { echo "Falta ~/.config/wallpaper."; exit 1; }; \
 	[[ -f "$$HOME/.config/dwm/colors" ]] || { echo "Falta ~/.config/dwm/colors."; exit 1; }; \
-	for file in /usr/local/bin/wallpaper-tui /usr/local/bin/dwm-colors-tui /usr/local/bin/bluetooth-tui; do \
+	for file in /usr/local/bin/wallpaper-tui /usr/local/bin/dwm-colors-tui /usr/local/bin/bluetooth-tui /usr/local/bin/battery-tui /usr/local/bin/redshift-tui /usr/local/bin/redshift-night-scheduler; do \
 		python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' "$$file" \
 			|| { echo "Error de sintaxis Python: $$file"; exit 1; }; \
 	done

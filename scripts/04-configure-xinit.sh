@@ -14,7 +14,12 @@ echo "==> [4/4] Configurando scripts de sesión y xinit"
 echo "==> Instalando scripts de sesión"
 $SUDO install -Dm755 "$BASE_DIR/scripts/dwm-session" "$PREFIX/bin/dwm-session"
 $SUDO install -Dm755 "$BASE_DIR/scripts/dwm-dmenu" "$PREFIX/bin/dwm-dmenu"
-$SUDO install -Dm755 "$BASE_DIR/scripts/redshift-auto" "$PREFIX/bin/redshift-auto"
+$SUDO install -Dm755 "$BASE_DIR/scripts/redshift-night-scheduler" "$PREFIX/bin/redshift-night-scheduler"
+if [[ -e "$PREFIX/bin/redshift-auto" ]]; then
+	echo "==> Eliminando el antiguo redshift-auto"
+	$SUDO rm -f "$PREFIX/bin/redshift-auto"
+fi
+pkill -f '/usr/local/bin/redshift-auto' 2>/dev/null || true
 
 echo "==> Instalando entrada de sesión para GDM"
 $SUDO install -Dm644 "$BASE_DIR/session/dwm.desktop" "/usr/share/xsessions/dwm.desktop"
@@ -25,7 +30,7 @@ if [[ -f "$HOME/.xinitrc" ]] && ! cmp -s "$BASE_DIR/configs/xinitrc" "$HOME/.xin
 fi
 install -Dm755 "$BASE_DIR/configs/xinitrc" "$HOME/.xinitrc"
 
-for script in dwm-session dwm-dmenu redshift-auto; do
+for script in dwm-session dwm-dmenu redshift-night-scheduler; do
 	if [[ ! -x "$PREFIX/bin/$script" ]]; then
 		echo "Error: no se instaló $PREFIX/bin/$script" >&2
 		exit 1
@@ -34,14 +39,15 @@ done
 
 sh -n "$PREFIX/bin/dwm-session"
 sh -n "$PREFIX/bin/dwm-dmenu"
-sh -n "$PREFIX/bin/redshift-auto"
+python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' \
+	"$PREFIX/bin/redshift-night-scheduler"
 
 echo
 echo "Sesión DWM configurada."
 echo "Al cerrar sesión y volver a entrar, DWM iniciará:"
 echo "  - fondo de pantalla"
 echo "  - picom"
-echo "  - redshift-auto"
+echo "  - redshift-night-scheduler"
 echo "  - slstatus"
 echo "  - xcape para abrir dmenu con la tecla Super"
 echo "  - dwm"

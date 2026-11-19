@@ -66,6 +66,8 @@ static const char unknown_str[] = "n/a";
  */
 static const struct arg args[] = {
 	/* function      format              argument */
+	{ run_command,   "Bateria | ",       "printf 'Bateria'" },
+	{ run_command,   "luz nocturna | ",  "printf 'luz nocturna'" },
 	{ run_command,   "WiFi: %s | ",      "/usr/local/bin/wifi-status" },
 	{ run_command,   "BT: %s | ",        "/usr/local/bin/bt-status" },
 	{ run_command,   "scrht | ",         "printf 'scrht'" },

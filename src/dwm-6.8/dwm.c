@@ -65,8 +65,9 @@ enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
 enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
-enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWifi, ClkBluetooth,
-       ClkScrot, ClkWinTitle, ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
+enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkBattery, ClkNight,
+       ClkWifi, ClkBluetooth, ClkScrot, ClkWinTitle, ClkClientWin,
+       ClkRootWin, ClkLast }; /* clicks */
 
 typedef union {
 	int i;
@@ -243,6 +244,8 @@ static void zoom(const Arg *arg);
 static const char broken[] = "broken";
 static char stext[256];
 static int status_x = 0;     /* left edge of the status text */
+static int battery_w = 0;    /* width of the clickable Bateria block */
+static int night_w = 0;      /* width of the clickable luz nocturna block */
 static int wifi_w = 0;       /* width of the clickable WiFi block */
 static int bt_w = 0;         /* width of the clickable Bluetooth block */
 static int scrht_w = 0;      /* width of the clickable scrht block */
@@ -564,13 +567,20 @@ buttonpress(XEvent *e)
 			arg.ui = 1 << i;
 		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
 			click = ClkLtSymbol;
-		else if (wifi_w && ev->x >= status_x && ev->x < status_x + wifi_w)
+		else if (battery_w && ev->x >= status_x
+		&& ev->x < status_x + battery_w)
+			click = ClkBattery;
+		else if (night_w && ev->x >= status_x + battery_w
+		&& ev->x < status_x + battery_w + night_w)
+			click = ClkNight;
+		else if (wifi_w && ev->x >= status_x + battery_w + night_w
+		&& ev->x < status_x + battery_w + night_w + wifi_w)
 			click = ClkWifi;
-		else if (bt_w && ev->x >= status_x + wifi_w
-		&& ev->x < status_x + wifi_w + bt_w)
+		else if (bt_w && ev->x >= status_x + battery_w + night_w + wifi_w
+		&& ev->x < status_x + battery_w + night_w + wifi_w + bt_w)
 			click = ClkBluetooth;
-		else if (scrht_w && ev->x >= status_x + wifi_w + bt_w
-		&& ev->x < status_x + wifi_w + bt_w + scrht_w)
+		else if (scrht_w && ev->x >= status_x + battery_w + night_w + wifi_w + bt_w
+		&& ev->x < status_x + battery_w + night_w + wifi_w + bt_w + scrht_w)
 			click = ClkScrot;
 		else if (ev->x >= status_x)
 			click = ClkStatusText;
@@ -838,15 +848,35 @@ dirtomon(int dir)
 	return m;
 }
 
+static int
+statusblock(const char **text, const char *prefix, char *out, size_t outsz)
+{
+	const char *sep;
+	size_t len, plen = strlen(prefix);
+
+	if (strncmp(*text, prefix, plen) != 0)
+		return 0;
+	if (!(sep = strstr(*text, " | ")))
+		return 0;
+	len = sep - *text;
+	if (len >= outsz)
+		len = outsz - 1;
+	memcpy(out, *text, len);
+	out[len] = '\0';
+	*text = sep + 3;
+	return drw_fontset_getwidth(drw, out) + 2 * WIFIPAD;
+}
+
 void
 drawbar(Monitor *m)
 {
-	int x, w, tw = 0, ww = 0, bw = 0, sw = 0;
+	int x, w, tw = 0, ww = 0, bw = 0, nw = 0, btw = 0, sw = 0;
 	int boxs = drw->fonts->h / 9;
 	int boxw = drw->fonts->h / 6 + 2;
 	unsigned int i, occ = 0, urg = 0;
 	char wifi[sizeof stext], bt[sizeof stext], scrht[sizeof stext];
-	const char *sep1 = NULL, *sep2 = NULL, *sep3 = NULL, *rest = NULL;
+	char battery[sizeof stext], night[sizeof stext];
+	const char *rest = NULL;
 	Client *c;
 
 	if (!m->showbar)
@@ -855,54 +885,57 @@ drawbar(Monitor *m)
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
 		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-		/* Los tres primeros bloques del estado son WiFi, Bluetooth y
-		 * scrht. Se dibujan como botones con el color de acento y se
-		 * pueden pulsar con el ratón. */
-		if (!strncmp(stext, "WiFi:", 5) && (sep1 = strstr(stext, " | "))) {
-			size_t len = sep1 - stext;
-			if (len >= sizeof wifi)
-				len = sizeof wifi - 1;
-			memcpy(wifi, stext, len);
-			wifi[len] = '\0';
-			ww = drw_fontset_getwidth(drw, wifi) + 2 * WIFIPAD;
+		/* Los bloques clicables del estado son, de izquierda a derecha:
+		 * Bateria, luz nocturna, WiFi, Bluetooth y scrht. */
+		rest = stext;
+		bw = statusblock(&rest, "Bateria", battery, sizeof battery);
+		if (bw)
 			tw += 2 * WIFIPAD;
-			rest = sep1;
-			if (!strncmp(sep1 + 3, "BT:", 3)
-			&& (sep2 = strstr(sep1 + 3, " | "))) {
-				len = sep2 - (sep1 + 3);
-				if (len >= sizeof bt)
-					len = sizeof bt - 1;
-				memcpy(bt, sep1 + 3, len);
-				bt[len] = '\0';
-				bw = drw_fontset_getwidth(drw, bt) + 2 * WIFIPAD;
-				tw += 2 * WIFIPAD;
-				rest = sep2;
-				if (!strncmp(sep2 + 3, "scrht", 5)
-				&& (sep3 = strstr(sep2 + 3, " | "))) {
-					len = sep3 - (sep2 + 3);
-					if (len >= sizeof scrht)
-						len = sizeof scrht - 1;
-					memcpy(scrht, sep2 + 3, len);
-					scrht[len] = '\0';
-					sw = drw_fontset_getwidth(drw, scrht) + 2 * WIFIPAD;
-					tw += 2 * WIFIPAD;
-					rest = sep3;
-				}
-			}
-		}
+		nw = statusblock(&rest, "luz nocturna", night, sizeof night);
+		if (nw)
+			tw += 2 * WIFIPAD;
+		ww = statusblock(&rest, "WiFi:", wifi, sizeof wifi);
+		if (ww)
+			tw += 2 * WIFIPAD;
+		btw = statusblock(&rest, "BT:", bt, sizeof bt);
+		if (btw)
+			tw += 2 * WIFIPAD;
+		sw = statusblock(&rest, "scrht", scrht, sizeof scrht);
+		if (sw)
+			tw += 2 * WIFIPAD;
+
 		status_x = m->ww - tw;
+		battery_w = bw;
+		night_w = nw;
 		wifi_w = ww;
-		bt_w = bw;
+		bt_w = btw;
 		scrht_w = sw;
-		if (ww) {
+		if (bw || nw || ww || btw || sw) {
+			int bx = status_x;
+
 			drw_setscheme(drw, scheme[SchemeSel]);
-			drw_text(drw, status_x, 0, ww, bh, WIFIPAD, wifi, 0);
-			if (bw)
-				drw_text(drw, status_x + ww, 0, bw, bh, WIFIPAD, bt, 0);
-			if (sw)
-				drw_text(drw, status_x + ww + bw, 0, sw, bh, WIFIPAD, scrht, 0);
+			if (bw) {
+				drw_text(drw, bx, 0, bw, bh, WIFIPAD, battery, 0);
+				bx += bw;
+			}
+			if (nw) {
+				drw_text(drw, bx, 0, nw, bh, WIFIPAD, night, 0);
+				bx += nw;
+			}
+			if (ww) {
+				drw_text(drw, bx, 0, ww, bh, WIFIPAD, wifi, 0);
+				bx += ww;
+			}
+			if (btw) {
+				drw_text(drw, bx, 0, btw, bh, WIFIPAD, bt, 0);
+				bx += btw;
+			}
+			if (sw) {
+				drw_text(drw, bx, 0, sw, bh, WIFIPAD, scrht, 0);
+				bx += sw;
+			}
 			drw_setscheme(drw, scheme[SchemeNorm]);
-			drw_text(drw, status_x + ww + bw + sw, 0, tw - ww - bw - sw, bh, 0, rest, 0);
+			drw_text(drw, bx, 0, tw - (bx - status_x), bh, 0, rest, 0);
 		} else {
 			drw_setscheme(drw, scheme[SchemeNorm]);
 			drw_text(drw, status_x, 0, tw, bh, 0, stext, 0);

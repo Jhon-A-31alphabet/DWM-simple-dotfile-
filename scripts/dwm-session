@@ -12,7 +12,8 @@ WALLPAPER=""
 
 [ -f "$HOME/.config/picom/picom.conf" ] && /usr/bin/picom --config "$HOME/.config/picom/picom.conf" -b
 
-/usr/local/bin/redshift-auto &
+pkill -f '/usr/local/bin/redshift-night-scheduler' 2>/dev/null || true
+/usr/local/bin/redshift-night-scheduler >/dev/null 2>&1 &
 /usr/local/bin/slstatus &
 
 # La tecla Win abre dmenu: al pulsarla sola, xcape genera la combinación

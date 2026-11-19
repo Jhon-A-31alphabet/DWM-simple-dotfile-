@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Instala las TUIs de fondos, colores y Bluetooth, sus accesos y sus assets.
+# Instala las TUIs de fondos, colores, Bluetooth, batería y luz nocturna,
+# sus accesos y sus assets.
 # Compatible con Debian/Ubuntu (apt), Fedora (dnf) y Arch Linux (pacman).
 set -euo pipefail
 
@@ -30,14 +31,14 @@ update_packages
 install_packages "${packages[@]}"
 
 echo "==> Instalando scripts TUI"
-for script in wallpaper-tui dwm-colors-tui bluetooth-tui; do
+for script in wallpaper-tui dwm-colors-tui bluetooth-tui battery-tui redshift-tui; do
 	$SUDO install -Dm755 "$BASE_DIR/scripts/$script" "$PREFIX/bin/$script"
 done
 $SUDO install -Dm755 "$BASE_DIR/scripts/bt-status" "$PREFIX/bin/bt-status"
 
 echo "==> Instalando accesos de dmenu/escritorio"
 mkdir -p "$APPLICATIONS_DIR"
-for desktop in wallpaper-tui dwm-colors-tui bluetooth-tui; do
+for desktop in wallpaper-tui dwm-colors-tui bluetooth-tui battery-tui redshift-tui; do
 	install -Dm644 "$BASE_DIR/configs/$desktop.desktop" "$APPLICATIONS_DIR/$desktop.desktop"
 done
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -46,6 +47,24 @@ fi
 
 echo "==> Creando carpetas de estado"
 mkdir -p "$HOME/.config/dwm" "$HOME/wallpapers" "$HOME/Imágenes/fondos"
+
+if [[ ! -f "$HOME/.config/redshift-night" ]]; then
+	echo "==> Creando configuración inicial de luz nocturna"
+	cat >"$HOME/.config/redshift-night" <<'EOF'
+mode=auto
+percent=0
+auto_percent=60
+begin=20:00
+end=07:00
+EOF
+fi
+
+if ! command -v powerprofilesctl >/dev/null 2>&1 \
+	&& ! command -v tlpctl >/dev/null 2>&1 \
+	&& ! command -v tlp >/dev/null 2>&1; then
+	echo "Advertencia: no se detectó power-profiles-daemon ni TLP 1.9+." >&2
+	echo "             La TUI Bateria mostrará un aviso hasta que instales uno." >&2
+fi
 
 if [[ ! -f "$HOME/.config/dwm/colors" ]]; then
 	echo "==> Creando tema de colores por defecto"
@@ -79,7 +98,7 @@ else
 	echo "Advertencia: no se encontró $ASSET_WALLPAPER; no se copió el fondo por defecto." >&2
 fi
 
-for command in wallpaper-tui dwm-colors-tui bluetooth-tui bt-status; do
+for command in wallpaper-tui dwm-colors-tui bluetooth-tui battery-tui redshift-tui bt-status; do
 	if [[ ! -x "$PREFIX/bin/$command" ]]; then
 		echo "Error: no se instaló $PREFIX/bin/$command" >&2
 		exit 1
@@ -91,7 +110,11 @@ echo "TUIs instaladas:"
 echo "  - wallpaper-tui"
 echo "  - dwm-colors-tui"
 echo "  - bluetooth-tui"
+echo "  - battery-tui"
+echo "  - redshift-tui"
 echo "Aparecen en dmenu como:"
 echo "  - Cambiar fondo de pantalla"
 echo "  - Cambiar colores de DWM"
 echo "  - Administrador Bluetooth"
+echo "  - Bateria"
+echo "  - luz nocturna"

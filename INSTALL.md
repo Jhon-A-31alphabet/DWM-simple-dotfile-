@@ -18,6 +18,9 @@ compilación e instalación es el mismo en las tres distribuciones.
 - Un usuario normal con permisos de `sudo`.
 - Conexión a Internet para instalar paquetes.
 - Haber iniciado sesión en una sesión gráfica para probar las TUIs y DWM.
+- Para el perfil de energía: `power-profiles-daemon` o TLP 1.9 o superior.
+  `make tuis` no instala ninguno automáticamente porque son incompatibles entre
+  sí; si no hay ninguno, `Bateria` muestra un aviso.
 
 No ejecutes los scripts como `root`; usan `sudo` solo para las operaciones del
 sistema. En Arch Linux, instala `sudo` si tu sistema mínimo no lo incluye y
@@ -97,6 +100,8 @@ Instala en `/usr/local/bin`:
 - `wallpaper-tui`
 - `dwm-colors-tui`
 - `bluetooth-tui`
+- `battery-tui`
+- `redshift-tui`
 - `bt-status`
 
 Crea `~/wallpapers`, copia el fondo por defecto desde
@@ -104,7 +109,12 @@ Crea `~/wallpapers`, copia el fondo por defecto desde
 `~/.config/dwm/colors` si no existe. No sobrescribe el fondo ni el tema que ya
 tenga el usuario.
 
-Instala los accesos de dmenu en `~/.local/share/applications`.
+También crea `~/.config/redshift-night` con un horario Auto inicial
+(20:00-07:00, 60 %) solo si el archivo no existe. La TUI `luz nocturna` permite
+cambiarlo o elegir un porcentaje manual; el modo manual cancela Auto.
+
+Instala los accesos de dmenu en `~/.local/share/applications`. `Bateria`
+detecta PPD o TLP 1.9+ en tiempo de ejecución; no instala ninguno de los dos.
 
 ### Capturas de pantalla
 
@@ -121,12 +131,13 @@ Instala:
 
 - `/usr/local/bin/dwm-session`
 - `/usr/local/bin/dwm-dmenu`
-- `/usr/local/bin/redshift-auto`
+- `/usr/local/bin/redshift-night-scheduler`
 - `~/.xinitrc`
 - `/usr/share/xsessions/dwm.desktop`
 
 `dwm-session` aplica el fondo guardado en `~/.config/wallpaper`, inicia picom,
-redshift, slstatus, xcape y DWM.
+`redshift-night-scheduler`, slstatus, xcape y DWM. El instalador elimina el
+antiguo `/usr/local/bin/redshift-auto` si existe.
 
 ## Verificación
 
@@ -143,8 +154,13 @@ Verifica:
 - `~/.xinitrc` y la sesión de GDM.
 - `~/.config/wallpaper`, `~/wallpapers` y `~/.config/dwm/colors`.
 - Que DWM tenga el soporte de recarga de colores.
-- Que slstatus y DWM apunten a las rutas correctas, incluido `wifi-status`.
+- Que slstatus y DWM apunten a las rutas correctas, incluidos `wifi-status`,
+  `Bateria`, `luz nocturna`, `battery-tui` y `redshift-tui`.
+- Que `dwm-session` inicie `redshift-night-scheduler` y no el antiguo
+  `redshift-auto`.
 - Que existan `scrot`, `scrot-shot`, el bloque `scrht` y el atajo `Ctrl+S`.
+- Que `~/.config/redshift-night` exista y que las TUIs nuevas tengan sintaxis
+  Python válida.
 
 ## Archivos de estado
 
@@ -152,12 +168,16 @@ Verifica:
 ~/.config/picom/picom.conf
 ~/.config/dwm/colors
 ~/.config/wallpaper
+~/.config/redshift-night
 ~/.fehbg
 ~/wallpapers/
 ```
 
-El instalador conserva las preferencias existentes de color, fondo y
-wallpapers. `picom.conf` y `~/.xinitrc` se respaldan si cambian.
+`redshift-night` contiene `mode` (`manual` o `auto`), `percent`,
+`auto_percent`, `begin` y `end`; la TUI añade `kelvin` con la última
+temperatura aplicada. El instalador conserva las
+preferencias existentes de color, fondo, luz nocturna y wallpapers.
+`picom.conf` y `~/.xinitrc` se respaldan si cambian.
 
 ## Problemas comunes
 
@@ -171,6 +191,61 @@ pgrep -a slstatus
 ```
 
 Reinicia la sesión de DWM.
+
+### La barra no muestra `Bateria` o `luz nocturna`
+
+Comprueba que la versión instalada de slstatus es la nueva y reinicia la
+sesión:
+
+```sh
+strings /usr/local/bin/slstatus | grep -E 'Bateria|luz nocturna'
+pgrep -a slstatus
+```
+
+Si no aparecen, ejecuta `make bar` y vuelve a iniciar sesión.
+
+### El clic en `Bateria` o `luz nocturna` no abre su TUI
+
+Comprueba los binarios y vuelve a instalar si faltan:
+
+```sh
+ls -l /usr/local/bin/battery-tui /usr/local/bin/redshift-tui
+grep -n 'battery-tui\|redshift-tui' \
+  ~/Documentos/MYDWM/src/dwm-6.8/config.def.h
+```
+
+DWM guarda los clics en el binario compilado; después de `make dwm` hay que
+cerrar sesión y volver a entrar.
+
+### `Bateria` dice que no hay backend
+
+Instala uno de los dos, no ambos:
+
+```sh
+# Opción A: power-profiles-daemon
+powerprofilesctl get
+
+# Opción B: TLP 1.9 o superior
+tlp-stat -s | grep -i 'TLP version'
+```
+
+Con TLP 1.8 la TUI muestra un aviso porque esa versión no tiene los tres
+perfiles. Actualiza a TLP 1.9+ o usa power-profiles-daemon.
+
+### La luz nocturna no cambia o vuelve al valor anterior
+
+Comprueba el estado y el scheduler:
+
+```sh
+cat ~/.config/redshift-night
+pgrep -af redshift-night-scheduler
+pgrep -a redshift
+```
+
+`redshift-night-scheduler` debe estar ejecutándose tras iniciar DWM. Si
+`mode=auto`, fuera de `begin`-`end` se aplica 6500 K; elige un porcentaje
+manual en `luz nocturna` para cancelar Auto. El antiguo `redshift-auto` ya no
+se usa y el instalador lo elimina.
 
 ### El clic en `BT:` no abre el administrador
 

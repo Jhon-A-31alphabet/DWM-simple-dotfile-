@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Bateria
+Comment=Seleccionar el perfil de energia del sistema
+Exec=/usr/local/bin/battery-tui
+Icon=battery
+Terminal=true
+Categories=Settings;HardwareSettings;
+Keywords=bateria;battery;energia;perfil;performance;balanced;power-saver;ppd;tlp;
+StartupNotify=true

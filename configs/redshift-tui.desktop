@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=luz nocturna
+Comment=Seleccionar el nivel de luz nocturna de Redshift
+Exec=/usr/local/bin/redshift-tui
+Icon=redshift
+Terminal=true
+Categories=Settings;DesktopSettings;
+Keywords=luz;nocturna;redshift;temperatura;auto;
+StartupNotify=true

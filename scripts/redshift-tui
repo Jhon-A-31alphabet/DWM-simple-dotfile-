@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Selector TUI de luz nocturna para Redshift.
+
+La lista superior permite elegir un porcentaje manual (0-100 %). La sección
+Auto permite configurar una ventana horaria diaria y una temperatura. Al
+elegir un porcentaje manual se cancela el horario automático.
+
+El estado se guarda en ~/.config/redshift-night y lo consume también
+redshift-night-scheduler para mantener el efecto después de cerrar la TUI.
+"""
+
+from __future__ import annotations
+
+import curses
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+APP_NAME = "luz nocturna"
+STATE_FILE = Path.home() / ".config" / "redshift-night"
+
+DEFAULT_BEGIN = "20:00"
+DEFAULT_END = "07:00"
+DEFAULT_AUTO_PERCENT = 60
+NEUTRAL_KELVIN = 6500
+
+LEVELS = [(percent, NEUTRAL_KELVIN - 50 * percent) for percent in range(0, 101, 10)]
+AUTO_FIELD_COUNT = 5
+TOTAL_ROWS = len(LEVELS) + AUTO_FIELD_COUNT
+
+FIELD_HOUR_BEGIN = 0
+FIELD_MINUTE_BEGIN = 1
+FIELD_HOUR_END = 2
+FIELD_MINUTE_END = 3
+FIELD_TEMP = 4
+
+
+def kelvin_for_percent(percent: int) -> int:
+    """Convierte 0-100 % a una temperatura de 6500 K a 1500 K."""
+    percent = max(0, min(100, int(percent)))
+    return NEUTRAL_KELVIN - 50 * percent
+
+
+def parse_hhmm(value: str) -> tuple[int, int] | None:
+    try:
+        hour_text, minute_text = value.strip().split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour, minute
+
+
+def format_hhmm(hour: int, minute: int) -> str:
+    return f"{hour:02d}:{minute:02d}"
+
+
+def minutes_of_day(hour: int, minute: int) -> int:
+    return hour * 60 + minute
+
+
+def in_window(now: datetime, begin: str, end: str) -> bool:
+    parsed_begin = parse_hhmm(begin)
+    parsed_end = parse_hhmm(end)
+    if not parsed_begin or not parsed_end:
+        return False
+    begin_min = minutes_of_day(*parsed_begin)
+    end_min = minutes_of_day(*parsed_end)
+    now_min = minutes_of_day(now.hour, now.minute)
+    if begin_min == end_min:
+        return False
+    if begin_min < end_min:
+        return begin_min <= now_min < end_min
+    return now_min >= begin_min or now_min < end_min
+
+
+def default_state() -> dict[str, object]:
+    return {
+        "mode": "auto",
+        "manual_percent": 0,
+        "auto_percent": DEFAULT_AUTO_PERCENT,
+        "begin": DEFAULT_BEGIN,
+        "end": DEFAULT_END,
+    }
+
+
+def load_state() -> dict[str, object]:
+    state = default_state()
+    try:
+        lines = STATE_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return state
+
+    values: dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+
+    if values.get("mode") in {"manual", "auto"}:
+        state["mode"] = values["mode"]
+
+    for key, state_key in (
+        ("percent", "manual_percent"),
+        ("auto_percent", "auto_percent"),
+    ):
+        try:
+            percent = int(values.get(key, str(state[state_key])))
+        except ValueError:
+            continue
+        state[state_key] = max(0, min(100, percent))
+
+    begin = values.get("begin", str(state["begin"]))
+    end = values.get("end", str(state["end"]))
+    if parse_hhmm(begin) and parse_hhmm(end) and begin != end:
+        state["begin"] = begin
+        state["end"] = end
+    return state
+
+
+def write_state(state: dict[str, object]) -> None:
+    mode = "manual" if state["mode"] == "manual" else "auto"
+    percent = int(state["manual_percent"] if mode == "manual" else state["auto_percent"])
+    if mode == "auto" and not in_window(datetime.now(), str(state["begin"]), str(state["end"])):
+        kelvin = NEUTRAL_KELVIN
+    else:
+        kelvin = kelvin_for_percent(percent)
+    lines = [
+        f"mode={mode}",
+        f"percent={int(state['manual_percent'])}",
+        f"auto_percent={int(state['auto_percent'])}",
+        f"begin={state['begin']}",
+        f"end={state['end']}",
+        f"kelvin={kelvin}",
+    ]
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATE_FILE.with_suffix(".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temporary, STATE_FILE)
+
+
+def apply_redshift(kelvin: int) -> tuple[bool, str]:
+    if not shutil.which("redshift"):
+        return False, "No se encontró el comando redshift."
+
+    subprocess.run(
+        ["pkill", "-x", "redshift"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        result = subprocess.run(
+            ["redshift", "-P", "-O", str(kelvin), "-b", "1:1"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"No se pudo ejecutar redshift: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return False, detail or f"redshift terminó con código {result.returncode}."
+    return True, ""
+
+
+def safe_addstr(stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
+    try:
+        stdscr.addstr(y, x, text, attr)
+    except curses.error:
+        pass
+
+
+class NightLightTUI:
+    def __init__(self) -> None:
+        state = load_state()
+        self.mode = str(state["mode"])
+        self.manual_percent = int(state["manual_percent"])
+        self.auto_percent = int(state["auto_percent"])
+        self.begin = str(state["begin"])
+        self.end = str(state["end"])
+        self.focus = (
+            self.percentage_index(self.manual_percent)
+            if self.mode == "manual"
+            else len(LEVELS)
+        )
+        self.buffer_index: int | None = None
+        self.buffer_text = ""
+        self.message = f"Modo actual: {self.mode}."
+        self.error = ""
+        self.colors = False
+
+        begin_parsed = parse_hhmm(self.begin) or (20, 0)
+        end_parsed = parse_hhmm(self.end) or (7, 0)
+        self.fields = [
+            f"{begin_parsed[0]:02d}",
+            f"{begin_parsed[1]:02d}",
+            f"{end_parsed[0]:02d}",
+            f"{end_parsed[1]:02d}",
+            str(self.auto_percent),
+        ]
+        self.field_widths = [2, 2, 2, 2, 3]
+
+    @staticmethod
+    def percentage_index(percent: int) -> int:
+        return max(0, min(10, percent // 10))
+
+    def initialize_colors(self) -> None:
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(3, curses.COLOR_RED, -1)
+            self.colors = True
+        except curses.error:
+            self.colors = False
+
+    def title_attr(self) -> int:
+        return curses.color_pair(1) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def selected_attr(self) -> int:
+        return curses.color_pair(2) | curses.A_BOLD if self.colors else curses.A_REVERSE
+
+    def error_attr(self) -> int:
+        return curses.color_pair(3) | curses.A_BOLD if self.colors else curses.A_BOLD
+
+    def commit_buffer(self) -> None:
+        if self.buffer_index is None:
+            return
+        self.fields[self.buffer_index] = self.buffer_text
+        self.buffer_index = None
+        self.buffer_text = ""
+
+    def move_focus(self, delta: int) -> None:
+        self.commit_buffer()
+        self.focus = (self.focus + delta) % TOTAL_ROWS
+
+    def handle_digit(self, digit: str) -> None:
+        if self.focus < len(LEVELS):
+            return
+        index = self.focus - len(LEVELS)
+        if self.buffer_index != index:
+            self.commit_buffer()
+            self.buffer_index = index
+            self.buffer_text = ""
+        width = self.field_widths[index]
+        if not self.buffer_text:
+            self.buffer_text = digit
+        elif len(self.buffer_text) < width:
+            self.buffer_text += digit
+        else:
+            self.buffer_text = digit
+
+    def handle_backspace(self) -> None:
+        if self.buffer_index is None:
+            return
+        self.buffer_text = self.buffer_text[:-1]
+
+    def apply_manual(self, percent: int) -> None:
+        self.mode = "manual"
+        self.manual_percent = percent
+        state = {
+            "mode": self.mode,
+            "manual_percent": self.manual_percent,
+            "auto_percent": self.auto_percent,
+            "begin": self.begin,
+            "end": self.end,
+        }
+        try:
+            write_state(state)
+        except OSError as exc:
+            self.error = f"No se pudo guardar el estado: {exc}"
+            return
+
+        kelvin = kelvin_for_percent(percent)
+        ok, detail = apply_redshift(kelvin)
+        if ok:
+            self.error = ""
+            self.message = f"Aplicado: {percent} % ({kelvin} K). Auto cancelado."
+        else:
+            self.error = detail
+
+    def validate_auto(self) -> tuple[int, int, int, int, int] | None:
+        try:
+            begin_hour = int(self.fields[FIELD_HOUR_BEGIN])
+            begin_minute = int(self.fields[FIELD_MINUTE_BEGIN])
+            end_hour = int(self.fields[FIELD_HOUR_END])
+            end_minute = int(self.fields[FIELD_MINUTE_END])
+            auto_percent = int(self.fields[FIELD_TEMP])
+        except ValueError:
+            self.error = "Los campos de Auto deben ser numéricos."
+            return None
+
+        if not 0 <= begin_hour <= 23 or not 0 <= end_hour <= 23:
+            self.error = "La hora debe estar entre 00 y 23."
+            return None
+        if not 0 <= begin_minute <= 59 or not 0 <= end_minute <= 59:
+            self.error = "Los minutos deben estar entre 00 y 59."
+            return None
+        if not 0 <= auto_percent <= 100:
+            self.error = "La temperatura debe estar entre 0 y 100 %."
+            return None
+        if begin_hour == end_hour and begin_minute == end_minute:
+            self.error = "begin y end no pueden ser iguales."
+            return None
+        return begin_hour, begin_minute, end_hour, end_minute, auto_percent
+
+    def apply_auto(self) -> None:
+        values = self.validate_auto()
+        if values is None:
+            return
+        begin_hour, begin_minute, end_hour, end_minute, auto_percent = values
+        self.begin = format_hhmm(begin_hour, begin_minute)
+        self.end = format_hhmm(end_hour, end_minute)
+        self.auto_percent = auto_percent
+        self.fields = [
+            f"{begin_hour:02d}",
+            f"{begin_minute:02d}",
+            f"{end_hour:02d}",
+            f"{end_minute:02d}",
+            str(auto_percent),
+        ]
+        self.mode = "auto"
+        state = {
+            "mode": self.mode,
+            "manual_percent": self.manual_percent,
+            "auto_percent": self.auto_percent,
+            "begin": self.begin,
+            "end": self.end,
+        }
+        try:
+            write_state(state)
+        except OSError as exc:
+            self.error = f"No se pudo guardar el estado: {exc}"
+            return
+
+        now = datetime.now()
+        active = in_window(now, self.begin, self.end)
+        kelvin = kelvin_for_percent(auto_percent) if active else NEUTRAL_KELVIN
+        ok, detail = apply_redshift(kelvin)
+        if ok:
+            self.error = ""
+            state_text = "dentro" if active else "fuera"
+            self.message = (
+                f"Auto aplicado: {self.begin}-{self.end}, {auto_percent} % "
+                f"({kelvin} K), {state_text} del horario."
+            )
+        else:
+            self.error = detail
+
+    def handle_enter(self) -> None:
+        if self.focus < len(LEVELS):
+            self.apply_manual(LEVELS[self.focus][0])
+            return
+        self.commit_buffer()
+        self.apply_auto()
+
+    def draw_field(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        label: str,
+        value: str,
+        index: int,
+        width: int,
+    ) -> int:
+        safe_addstr(stdscr, y, x, label)
+        x += len(label)
+        if index < 0:
+            return x
+        display = self.buffer_text if self.buffer_index == index else value
+        text = f"[{display:>{width}}]"
+        attr = self.selected_attr() if self.focus == len(LEVELS) + index else 0
+        safe_addstr(stdscr, y, x, text, attr)
+        return x + len(text)
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        safe_addstr(stdscr, 0, 2, APP_NAME, self.title_attr())
+        safe_addstr(stdscr, 1, 2, "Selecciona un porcentaje o configura Auto.", curses.A_DIM)
+
+        y = 3
+        for index, (percent, kelvin) in enumerate(LEVELS):
+            marker = ">" if self.focus == index else " "
+            current = "*" if self.mode == "manual" and self.manual_percent == percent else " "
+            text = f"{marker} {current} {percent:3d} %   ({kelvin} K)"
+            attr = self.selected_attr() if self.focus == index else 0
+            safe_addstr(stdscr, y, 2, text, attr)
+            y += 1
+            if y >= height - 8:
+                break
+
+        y += 1
+        auto_state = "activo" if self.mode == "auto" else "cancelado"
+        safe_addstr(stdscr, y, 2, f"Auto [{auto_state}]", self.title_attr())
+        y += 1
+        if y < height:
+            x = 2
+            x = self.draw_field(stdscr, y, x, "begin: ", self.fields[0], FIELD_HOUR_BEGIN, 2)
+            x = self.draw_field(stdscr, y, x, " : ", self.fields[1], FIELD_MINUTE_BEGIN, 2)
+            x = self.draw_field(stdscr, y, x, " 24h    ", "", -1, 0)
+            x = self.draw_field(stdscr, y, x, "end: ", self.fields[2], FIELD_HOUR_END, 2)
+            x = self.draw_field(stdscr, y, x, " : ", self.fields[3], FIELD_MINUTE_END, 2)
+            x = self.draw_field(stdscr, y, x, " 24h", "", -1, 0)
+            y += 1
+        if y < height:
+            x = 2
+            x = self.draw_field(stdscr, y, x, "temperatura: ", self.fields[4], FIELD_TEMP, 3)
+            safe_addstr(stdscr, y, x, " %")
+            y += 1
+
+        if y < height:
+            y += 1
+            safe_addstr(stdscr, y, 2, "↑/↓ mover  Tab siguiente  0-9 editar  Enter aplicar  q salir", curses.A_DIM)
+        if self.error:
+            y += 1
+            safe_addstr(stdscr, y, 2, self.error, self.error_attr())
+        elif self.message:
+            y += 1
+            safe_addstr(stdscr, y, 2, self.message)
+        stdscr.refresh()
+
+    def run(self, stdscr: curses.window) -> None:
+        self.initialize_colors()
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        while True:
+            self.draw(stdscr)
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                self.commit_buffer()
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                self.move_focus(-1)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                self.move_focus(1)
+            elif key == 9:
+                self.move_focus(1)
+            elif key == curses.KEY_BTAB:
+                self.move_focus(-1)
+            elif key in (10, 13, curses.KEY_ENTER):
+                self.handle_enter()
+            elif key in (curses.KEY_BACKSPACE, 8, 127):
+                self.handle_backspace()
+            elif 48 <= key <= 57:
+                self.handle_digit(chr(key))
+            elif key == curses.KEY_RESIZE:
+                continue
+
+
+def main() -> int:
+    try:
+        curses.wrapper(lambda stdscr: NightLightTUI().run(stdscr))
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

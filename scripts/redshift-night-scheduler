@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Aplica el nivel de luz nocturna configurado por redshift-tui.
+
+Reemplaza al antiguo redshift-auto. Lee ~/.config/redshift-night y mantiene
+el efecto aunque la TUI esté cerrada. En modo manual aplica siempre el
+porcentaje elegido; en modo auto aplica la temperatura dentro de la ventana
+horaria y 6500 K (neutro) fuera de ella.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+STATE_FILE = Path.home() / ".config" / "redshift-night"
+NEUTRAL_KELVIN = 6500
+POLL_SECONDS = 10
+
+
+def kelvin_for_percent(percent: int) -> int:
+    percent = max(0, min(100, int(percent)))
+    return NEUTRAL_KELVIN - 50 * percent
+
+
+def parse_hhmm(value: str) -> tuple[int, int] | None:
+    try:
+        hour_text, minute_text = value.strip().split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour, minute
+
+
+def minutes_of_day(hour: int, minute: int) -> int:
+    return hour * 60 + minute
+
+
+def in_window(now: datetime, begin: str, end: str) -> bool:
+    parsed_begin = parse_hhmm(begin)
+    parsed_end = parse_hhmm(end)
+    if not parsed_begin or not parsed_end:
+        return False
+    begin_min = minutes_of_day(*parsed_begin)
+    end_min = minutes_of_day(*parsed_end)
+    now_min = minutes_of_day(now.hour, now.minute)
+    if begin_min == end_min:
+        return False
+    if begin_min < end_min:
+        return begin_min <= now_min < end_min
+    return now_min >= begin_min or now_min < end_min
+
+
+def default_state() -> dict[str, object]:
+    return {
+        "mode": "auto",
+        "manual_percent": 0,
+        "auto_percent": 60,
+        "begin": "20:00",
+        "end": "07:00",
+    }
+
+
+def load_state() -> dict[str, object]:
+    state = default_state()
+    try:
+        lines = STATE_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return state
+
+    values: dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+
+    if values.get("mode") in {"manual", "auto"}:
+        state["mode"] = values["mode"]
+
+    for key, state_key in (
+        ("percent", "manual_percent"),
+        ("auto_percent", "auto_percent"),
+    ):
+        try:
+            percent = int(values.get(key, str(state[state_key])))
+        except ValueError:
+            continue
+        state[state_key] = max(0, min(100, percent))
+
+    begin = values.get("begin", str(state["begin"]))
+    end = values.get("end", str(state["end"]))
+    if parse_hhmm(begin) and parse_hhmm(end) and begin != end:
+        state["begin"] = begin
+        state["end"] = end
+    return state
+
+
+def target_kelvin(state: dict[str, object], now: datetime) -> int:
+    if state["mode"] == "manual":
+        return kelvin_for_percent(int(state["manual_percent"]))
+    if in_window(now, str(state["begin"]), str(state["end"])):
+        return kelvin_for_percent(int(state["auto_percent"]))
+    return NEUTRAL_KELVIN
+
+
+def apply_redshift(kelvin: int) -> tuple[bool, str]:
+    if not shutil.which("redshift"):
+        return False, "No se encontró el comando redshift."
+
+    subprocess.run(
+        ["pkill", "-x", "redshift"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        result = subprocess.run(
+            ["redshift", "-P", "-O", str(kelvin), "-b", "1:1"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"No se pudo ejecutar redshift: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return False, detail or f"redshift terminó con código {result.returncode}."
+    return True, ""
+
+
+def main() -> int:
+    last_target: int | None = None
+    last_error = ""
+    while True:
+        state = load_state()
+        target = target_kelvin(state, datetime.now())
+        if target != last_target:
+            ok, detail = apply_redshift(target)
+            if ok:
+                last_target = target
+                last_error = ""
+            else:
+                if detail != last_error:
+                    print(f"redshift-night-scheduler: {detail}", file=sys.stderr, flush=True)
+                    last_error = detail
+                # Reintentar en la siguiente vuelta.
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
