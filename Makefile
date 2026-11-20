@@ -8,35 +8,28 @@ SRC := $(ROOT)/src
 
 help:
 	@echo "MYDWM - objetivos disponibles:"
-	@echo "  make setup   Instala y configura todo (DWM, barra, TUIs y sesión)."
-	@echo "  make dwm     Instala DWM y picom."
-	@echo "  make bar     Instala slstatus, dmenu, slock, nmtui y Bluetooth."
-	@echo "  make tuis    Instala los selectores TUI y sus accesos."
-	@echo "  make xinit   Configura dwm-session, ~/.xinitrc y la sesión GDM."
+	@echo "  make setup   Instala y configura todo con una sola autenticación de sudo."
+	@echo "  make dwm     Instala DWM y picom (pide sudo una vez)."
+	@echo "  make bar     Instala slstatus, dmenu, slock, nmtui y Bluetooth (pide sudo una vez)."
+	@echo "  make tuis    Instala los selectores TUI y sus accesos (pide sudo una vez)."
+	@echo "  make xinit   Configura dwm-session, ~/.xinitrc y la sesión GDM (pide sudo una vez)."
 	@echo "  make verify  Verifica que todo esté instalado."
 	@echo "  make clean   Limpia los artefactos de compilación."
 
 setup:
-	@echo "==> Configuración completa de MYDWM"
-	@$(MAKE) --no-print-directory dwm
-	@$(MAKE) --no-print-directory bar
-	@$(MAKE) --no-print-directory tuis
-	@$(MAKE) --no-print-directory xinit
-	@$(MAKE) --no-print-directory verify
-	@echo
-	@echo "Instalación completa. Cierra sesión y elige 'DWM' en GDM."
+	@bash "$(SCRIPTS)/install-all.sh"
 
 dwm:
-	@bash "$(SCRIPTS)/01-install-dwm.sh"
+	@bash "$(SCRIPTS)/sudo-once.sh" bash "$(SCRIPTS)/01-install-dwm.sh"
 
 bar:
-	@bash "$(SCRIPTS)/02-install-bar.sh"
+	@bash "$(SCRIPTS)/sudo-once.sh" bash "$(SCRIPTS)/02-install-bar.sh"
 
 tuis:
-	@bash "$(SCRIPTS)/03-install-tuis.sh"
+	@bash "$(SCRIPTS)/sudo-once.sh" bash "$(SCRIPTS)/03-install-tuis.sh"
 
 xinit:
-	@bash "$(SCRIPTS)/04-configure-xinit.sh"
+	@bash "$(SCRIPTS)/sudo-once.sh" bash "$(SCRIPTS)/04-configure-xinit.sh"
 
 verify:
 	@echo "==> Verificando instalación de MYDWM"
@@ -124,6 +117,11 @@ verify:
 	for file in /usr/local/bin/wallpaper-tui /usr/local/bin/dwm-colors-tui /usr/local/bin/bluetooth-tui /usr/local/bin/battery-tui /usr/local/bin/redshift-tui /usr/local/bin/redshift-night-scheduler; do \
 		python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' "$$file" \
 			|| { echo "Error de sintaxis Python: $$file"; exit 1; }; \
+	done
+	@set -euo pipefail; \
+	for file in "$(SCRIPTS)/sudo-once.sh" "$(SCRIPTS)/install-all.sh"; do \
+		[[ -x "$$file" ]] || { echo "No es ejecutable: $$file"; exit 1; }; \
+		bash -n "$$file" || { echo "Error de sintaxis: $$file"; exit 1; }; \
 	done
 	@echo "Verificación completada correctamente."
 

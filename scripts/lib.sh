@@ -43,7 +43,7 @@ echo "==> Gestor de paquetes: $PKG_MANAGER"
 update_packages() {
 	case "$PKG_MANAGER" in
 		apt)
-			$SUDO apt-get update
+			$SUDO env DEBIAN_FRONTEND=noninteractive apt-get update
 			;;
 		dnf)
 			# dnf actualiza metadatos al instalar; no se fuerza una actualización.
@@ -60,7 +60,7 @@ install_packages() {
 	fi
 	case "$PKG_MANAGER" in
 		apt)
-			$SUDO apt-get install -y "$@"
+			$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
 			;;
 		dnf)
 			$SUDO dnf install -y "$@"

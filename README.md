@@ -39,8 +39,10 @@ cd ~/Documentos/MYDWM
 make setup
 ```
 
-El comando pide la contraseña de `sudo` para instalar paquetes y binarios del
-sistema. Al terminar:
+El comando pide la contraseña de `sudo` una sola vez al inicio. Después
+reutiliza la autenticación para instalar paquetes, compilar, instalar los
+binarios y configurar la sesión sin volver a preguntar. Ejecútalo desde una
+terminal. Al terminar:
 
 1. Cierra sesión.
 2. En GDM selecciona la sesión **DWM**.
@@ -51,6 +53,9 @@ También se puede usar el instalador de compatibilidad:
 ```sh
 ./install.sh
 ```
+
+Los objetivos individuales (`make dwm`, `make bar`, `make tuis` y `make xinit`)
+también piden la contraseña una sola vez cada uno.
 
 ## Qué instala
 
@@ -139,7 +144,9 @@ MYDWM/
 ├── configs/
 ├── screenshots/
 ├── scripts/
+│   ├── install-all.sh
 │   ├── lib.sh
+│   ├── sudo-once.sh
 │   ├── 01-install-dwm.sh
 │   ├── 02-install-bar.sh
 │   ├── 03-install-tuis.sh

@@ -16,6 +16,8 @@ compilación e instalación es el mismo en las tres distribuciones.
 
 - Debian/Ubuntu, Fedora o Arch Linux con systemd.
 - Un usuario normal con permisos de `sudo`.
+- Ejecutar la instalación desde una terminal interactiva para el único
+  prompt de `sudo`.
 - Conexión a Internet para instalar paquetes.
 - Haber iniciado sesión en una sesión gráfica para probar las TUIs y DWM.
 - Para el perfil de energía: `power-profiles-daemon` o TLP 1.9 o superior.
@@ -30,6 +32,13 @@ actualiza la base de datos antes de empezar:
 sudo pacman -Syu
 ```
 
+La instalación completa solicita la contraseña de `sudo` una sola vez al
+inicio. `scripts/sudo-once.sh` autentica, mantiene la credencial activa
+mientras dura el proceso y ejecuta el resto con `sudo -n`, sin volver a
+preguntar ni guardar la contraseña. Si la configuración de `sudo` no permite
+reutilizar la autenticación, el instalador se detiene antes de modificar el
+sistema.
+
 `xcape` es opcional: se intenta instalar, pero si no está en los repositorios de
 tu distribución el instalador continúa. Sin `xcape`, usa `Super + P` para abrir
 dmenu; `Super` sola requiere `xcape`.
@@ -41,7 +50,9 @@ cd ~/Documentos/MYDWM
 make setup
 ```
 
-El `Makefile` ejecuta, en orden:
+`make setup` delega en `scripts/install-all.sh`. Primero
+`scripts/sudo-once.sh` pide la contraseña una sola vez y mantiene la credencial
+activa; después se ejecuta, en orden:
 
 1. `scripts/01-install-dwm.sh`
 2. `scripts/02-install-bar.sh`
@@ -50,6 +61,9 @@ El `Makefile` ejecuta, en orden:
 5. `make verify`
 
 Al finalizar, cierra sesión y selecciona **DWM** en GDM.
+
+Los objetivos individuales (`make dwm`, `make bar`, `make tuis` y `make xinit`)
+también usan `sudo-once.sh` y piden la contraseña una sola vez cada uno.
 
 ## Instalación por partes
 
@@ -180,6 +194,20 @@ preferencias existentes de color, fondo, luz nocturna y wallpapers.
 `picom.conf` y `~/.xinitrc` se respaldan si cambian.
 
 ## Problemas comunes
+
+### La instalación vuelve a pedir la contraseña de sudo
+
+Comprueba que la credencial se puede reutilizar desde un proceso hijo:
+
+```sh
+sudo -v
+bash -c 'sudo -n true'
+```
+
+Si el segundo comando falla, `sudo` no está reutilizando la autenticación. En
+ese caso el instalador se detiene con un mensaje de error en lugar de pedir la
+contraseña varias veces. Revisa `timestamp_timeout` y `timestamp_type` en la
+configuración de `sudo`, o ejecuta `make setup` desde una terminal interactiva.
 
 ### La barra no muestra WiFi o Bluetooth
 
